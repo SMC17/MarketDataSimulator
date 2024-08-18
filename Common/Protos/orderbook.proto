@@ -1,0 +1,66 @@
+﻿syntax = "proto3";
+
+package Proto;
+
+message SubscribeRequest
+{
+    repeated int32 Ids = 1;
+}
+
+message UnsubscribeRequest
+{
+    repeated int32 Ids = 2;
+}
+
+message Subscription
+{
+    SubscribeRequest Subscribe = 1;
+    UnsubscribeRequest Unsubscribe = 2;
+}
+
+message OrderbookLevel
+{
+    int32 Price = 1;
+    bool IsBuy = 2;
+    uint32 Quantity = 3;
+}
+
+enum OrderbookLevelUpdateType
+{
+    Invalid = 0;
+    Add = 1;
+    Replace = 2;
+    Remove = 3;
+}
+
+message OrderbookLevelUpdate
+{
+    OrderbookLevelUpdateType UpdateType = 1;
+    OrderbookLevel Level = 2;
+}
+
+message OrderbookSnapshotUpdate
+{
+    repeated OrderbookLevelUpdate Bids = 1;
+    repeated OrderbookLevelUpdate Asks = 2;
+}
+
+message OrderbookIncrementalUpdate
+{
+    OrderbookLevelUpdate Update = 1;
+}
+
+message OrderbookUpdate
+{
+    int32 InstrumentId = 1;
+    oneof Update
+    {
+        OrderbookSnapshotUpdate Snapshot = 2;
+        OrderbookIncrementalUpdate Incremental = 3;
+    }
+}
+
+service OrderbookService
+{
+    rpc StreamOrderbookUpdates (stream Subscription) returns (stream OrderbookUpdate);
+}
