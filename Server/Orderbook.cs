@@ -18,7 +18,10 @@ namespace MarketData.Server
             _spinTask = GenerateUpdatesAsync(new WeakReference<Orderbook>(this), instrument, service, _disposedSource);
         }
 
-        private static async Task GenerateUpdatesAsync(WeakReference<Orderbook> orderbook, Instrument instrument, IOrderbookService service, TaskCompletionSource disposedSource)
+        private static async Task GenerateUpdatesAsync(WeakReference<Orderbook> orderbook,
+            Instrument instrument,
+            IOrderbookService service, 
+            TaskCompletionSource disposedSource)
         {
             var random = new Random(DateTime.Now.Millisecond);
 
@@ -29,7 +32,8 @@ namespace MarketData.Server
 
                 try
                 {
-                    await Task.WhenAny(Task.Delay(TimeSpan.FromSeconds(random.NextDouble() * 2)), disposedSource.Task).ConfigureAwait(false);
+                    await Task.WhenAny(Task.Delay(TimeSpan.FromSeconds(random.NextDouble() * 2)), 
+                        disposedSource.Task).ConfigureAwait(false); 
 
                     if (disposedSource.Task.IsCompleted)
                         return;
@@ -39,12 +43,14 @@ namespace MarketData.Server
                     if (random.NextDouble() > 0.95)
                     {
                         var snapshot = model.Refresh(random, instrument);
-                        update = new OrderbookUpdate(new OrderbookSnapshotUpdate(instrument.Id, snapshot.Bids, snapshot.Asks));
+                        update = new OrderbookUpdate(
+                            new OrderbookSnapshotUpdate(instrument.Id, snapshot.Bids, snapshot.Asks));
                     }
                     else
                     {
                         var incremental = model.Update(random, instrument);
-                        update = new OrderbookUpdate(new OrderbookIncrementalUpdate(instrument.Id, incremental.UpdateType, incremental.Level));
+                        update = new OrderbookUpdate(
+                            new OrderbookIncrementalUpdate(instrument.Id, incremental.UpdateType, incremental.Level));
                     }
                     
                     await service.OnOrderbookUpdateAsync(update).ConfigureAwait(false);
@@ -69,6 +75,7 @@ namespace MarketData.Server
             }
 
             uint GetQuantity() => (uint)random.Next(1, 1000);
+            int GetPrice() => random.Next(-100, 100);
 
             List<OrderbookLevel> levels = null;
             SortedSet<OrderbookLevel> oppositeSortedLevels = null;
@@ -82,56 +89,69 @@ namespace MarketData.Server
 
             var replace = levels.Count == instrument.Specifications.Depth;
             var remove = random.NextDouble() < (levels.Count / (double)(instrument.Specifications.Depth + 1));
+            var index = random.Next(0, levels.Count - 1);
 
             if (remove)
             {
-                var index = random.Next(0, levels.Count - 1);
-                var level = levels[index];
-                levels.Remove(level);
-                sortedLevels.Remove(level);
-                return new OrderbookLevelUpdate(OrderbookUpdateType.Remove, level);
+                return RemoveLevel(index, levels, sortedLevels);
             }
             else if (replace)
             {
-                var index = random.Next(0, levels.Count - 1);
-                var level = levels[index];
-                sortedLevels.Remove(level);
-                level = level with { Quantity = GetQuantity() };
-                levels[index] = level;
-                sortedLevels.Add(level);
-                return new OrderbookLevelUpdate(OrderbookUpdateType.Replace, level);
+                return ReplaceLevel(index, levels, sortedLevels, GetQuantity());
             }
             else
             {
-                OrderbookLevel level = null;
+                return AddLevel(levels, oppositeSortedLevels, sortedLevels, buy, GetPrice(), GetQuantity());
+            }    
+        }
 
-                if (!levels.Any())
+        private static OrderbookLevelUpdate AddLevel(List<OrderbookLevel> levels,
+            SortedSet<OrderbookLevel> oppositeSortedLevels,
+            SortedSet<OrderbookLevel> sortedLevels,
+            bool buy, int price, uint quantity)
+        {
+            OrderbookLevel level = null;
+
+            if (!levels.Any())
+            {
+                if (!oppositeSortedLevels.Any())
                 {
-                    if (!oppositeSortedLevels.Any())
-                    {
-                        level = new OrderbookLevel(random.Next(0, 100), buy, GetQuantity());
-                    }
-                    else
-                    {
-                        var minimum = oppositeSortedLevels.Min;
-                        var maximum = oppositeSortedLevels.Max;
-                        level = new OrderbookLevel(buy ? maximum.Price - 1 : minimum.Price + 1, buy, GetQuantity());
-                    }
-
+                    level = new OrderbookLevel(price, buy, quantity);
                 }
                 else
                 {
-                    var minimum = sortedLevels.Min;
-                    level = new OrderbookLevel(buy ? minimum.Price - 1 : minimum.Price + 1, buy, GetQuantity());
+                    var minimum = oppositeSortedLevels.Min;
+                    var maximum = oppositeSortedLevels.Max;
+                    level = new OrderbookLevel(buy ? maximum.Price - 1 : minimum.Price + 1, buy, quantity);
                 }
-
-                levels.Add(level);
-                sortedLevels.Add(level);
-
-                return new OrderbookLevelUpdate(OrderbookUpdateType.Add, level);
+            }
+            else
+            {
+                var minimum = sortedLevels.Min;
+                level = new OrderbookLevel(buy ? minimum.Price - 1 : minimum.Price + 1, buy, quantity);
             }
 
+            levels.Add(level);
+            sortedLevels.Add(level);
 
+            return new OrderbookLevelUpdate(OrderbookUpdateType.Add, level);
+        }
+
+        private static OrderbookLevelUpdate ReplaceLevel(int index, List<OrderbookLevel> levels, SortedSet<OrderbookLevel> sortedLevels, uint quantity)
+        {
+            var level = levels[index];
+            sortedLevels.Remove(level);
+            level = level with { Quantity = quantity };
+            levels[index] = level;
+            sortedLevels.Add(level);
+            return new OrderbookLevelUpdate(OrderbookUpdateType.Replace, level);
+        }
+        private static OrderbookLevelUpdate RemoveLevel(int index, List<OrderbookLevel> levels, SortedSet<OrderbookLevel> sortedLevels)
+        {
+            var level = levels[index];
+            levels.RemoveAt(index);
+            sortedLevels.Remove(level);
+            return new OrderbookLevelUpdate(OrderbookUpdateType.Remove, level);
         }
 
         private OrderbookSnapshotUpdate Refresh(Random random, Instrument instrument)
