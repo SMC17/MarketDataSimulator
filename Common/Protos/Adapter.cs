@@ -29,15 +29,45 @@ namespace MarketData.Common
                 var asks = update.Snapshot.Asks.Select(ToLevel);
                 return new OrderbookUpdate(new OrderbookSnapshotUpdate(update.InstrumentId,
                     bids.ToList().AsReadOnly(),
-                    asks.ToList().AsReadOnly()));
+                    asks.ToList().AsReadOnly()))
+                { SourceTimestamp = update.SourceTimestamp };
             }
             else if (update.UpdateCase is Proto.OrderbookUpdate.UpdateOneofCase.Incremental)
             {
                 return new OrderbookUpdate(new OrderbookIncrementalUpdate(update.InstrumentId,
-                    ToType(update.Incremental.Update.UpdateType), ToLevel(update.Incremental.Update)));
+                    ToType(update.Incremental.Update.UpdateType), ToLevel(update.Incremental.Update)))
+                { SourceTimestamp = update.SourceTimestamp };
             }
             else throw new InvalidOperationException($"Unknown Update Type ({update.UpdateCase})");
         }
+        /// <summary>
+        /// Encodes an update once for the whole subscriber population. The wire message is identical
+        /// for every subscriber, so building it per client - as the fan-out used to - meant N message
+        /// graphs allocated per update instead of one.
+        /// </summary>
+        public static Proto.OrderbookUpdate ToProto(OrderbookUpdate update)
+        {
+            var message = new Proto.OrderbookUpdate()
+            {
+                InstrumentId = update.InstrumentId,
+                SourceTimestamp = update.SourceTimestamp,
+            };
+
+            if (update.IsSnapshot)
+            {
+                message.Snapshot = new Proto.OrderbookSnapshotUpdate();
+                message.Snapshot.Asks.AddRange(update.Snapshot.Asks.Select(ToSnapshotLevel));
+                message.Snapshot.Bids.AddRange(update.Snapshot.Bids.Select(ToSnapshotLevel));
+            }
+            else
+            {
+                message.Incremental = new Proto.OrderbookIncrementalUpdate();
+                message.Incremental.Update = ToIncrementalLevel(update.Incremental);
+            }
+
+            return message;
+        }
+
         public static Proto.OrderbookLevelUpdate ToSnapshotLevel(OrderbookLevel i) =>
                 new Proto.OrderbookLevelUpdate() { UpdateType = Proto.OrderbookLevelUpdateType.Add, Level = new Proto.OrderbookLevel() { IsBuy = i.IsBuy, Price = i.Price, Quantity = i.Quantity } };
         public static Proto.OrderbookLevelUpdate ToIncrementalLevel(OrderbookIncrementalUpdate i)
