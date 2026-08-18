@@ -1,0 +1,149 @@
+[
+  {
+    "Depth": 5,
+    "Implementation": "SortedArrayBook",
+    "MixedNsPerOp": 20.81,
+    "TouchNsPerOp": 2.67,
+    "SnapshotNsPerOp": 8.11
+  },
+  {
+    "Depth": 5,
+    "Implementation": "LadderBook",
+    "MixedNsPerOp": 27.66,
+    "TouchNsPerOp": 13.4,
+    "SnapshotNsPerOp": 129.51
+  },
+  {
+    "Depth": 5,
+    "Implementation": "TreeBook",
+    "MixedNsPerOp": 40.84,
+    "TouchNsPerOp": 36.24,
+    "SnapshotNsPerOp": 381.33
+  },
+  {
+    "Depth": 10,
+    "Implementation": "SortedArrayBook",
+    "MixedNsPerOp": 25.59,
+    "TouchNsPerOp": 2.64,
+    "SnapshotNsPerOp": 8.23
+  },
+  {
+    "Depth": 10,
+    "Implementation": "LadderBook",
+    "MixedNsPerOp": 17.92,
+    "TouchNsPerOp": 4.78,
+    "SnapshotNsPerOp": 38.14
+  },
+  {
+    "Depth": 10,
+    "Implementation": "TreeBook",
+    "MixedNsPerOp": 46.65,
+    "TouchNsPerOp": 6.43,
+    "SnapshotNsPerOp": 153.03
+  },
+  {
+    "Depth": 25,
+    "Implementation": "SortedArrayBook",
+    "MixedNsPerOp": 32.91,
+    "TouchNsPerOp": 4.57,
+    "SnapshotNsPerOp": 8.31
+  },
+  {
+    "Depth": 25,
+    "Implementation": "LadderBook",
+    "MixedNsPerOp": 19.81,
+    "TouchNsPerOp": 5.3,
+    "SnapshotNsPerOp": 39.08
+  },
+  {
+    "Depth": 25,
+    "Implementation": "TreeBook",
+    "MixedNsPerOp": 64.68,
+    "TouchNsPerOp": 8.47,
+    "SnapshotNsPerOp": 168.91
+  },
+  {
+    "Depth": 50,
+    "Implementation": "SortedArrayBook",
+    "MixedNsPerOp": 35.17,
+    "TouchNsPerOp": 6.78,
+    "SnapshotNsPerOp": 12.87
+  },
+  {
+    "Depth": 50,
+    "Implementation": "LadderBook",
+    "MixedNsPerOp": 21.04,
+    "TouchNsPerOp": 2.28,
+    "SnapshotNsPerOp": 36.48
+  },
+  {
+    "Depth": 50,
+    "Implementation": "TreeBook",
+    "MixedNsPerOp": 76.07,
+    "TouchNsPerOp": 9.24,
+    "SnapshotNsPerOp": 343.5
+  },
+  {
+    "Depth": 100,
+    "Implementation": "SortedArrayBook",
+    "MixedNsPerOp": 39.16,
+    "TouchNsPerOp": 4.08,
+    "SnapshotNsPerOp": 7.82
+  },
+  {
+    "Depth": 100,
+    "Implementation": "LadderBook",
+    "MixedNsPerOp": 20.75,
+    "TouchNsPerOp": 2.15,
+    "SnapshotNsPerOp": 35.76
+  },
+  {
+    "Depth": 100,
+    "Implementation": "TreeBook",
+    "MixedNsPerOp": 82.39,
+    "TouchNsPerOp": 10.19,
+    "SnapshotNsPerOp": 220.93
+  },
+  {
+    "Depth": 250,
+    "Implementation": "SortedArrayBook",
+    "MixedNsPerOp": 42.52,
+    "TouchNsPerOp": 3.96,
+    "SnapshotNsPerOp": 7.27
+  },
+  {
+    "Depth": 250,
+    "Implementation": "LadderBook",
+    "MixedNsPerOp": 21.33,
+    "TouchNsPerOp": 2.23,
+    "SnapshotNsPerOp": 34.69
+  },
+  {
+    "Depth": 250,
+    "Implementation": "TreeBook",
+    "MixedNsPerOp": 121.54,
+    "TouchNsPerOp": 11.73,
+    "SnapshotNsPerOp": 981.2
+  },
+  {
+    "Depth": 1000,
+    "Implementation": "SortedArrayBook",
+    "MixedNsPerOp": 53.11,
+    "TouchNsPerOp": 4.06,
+    "SnapshotNsPerOp": 7.7
+  },
+  {
+    "Depth": 1000,
+    "Implementation": "LadderBook",
+    "MixedNsPerOp": 28.81,
+    "TouchNsPerOp": 2.32,
+    "SnapshotNsPerOp": 34.77
+  },
+  {
+    "Depth": 1000,
+    "Implementation": "TreeBook",
+    "MixedNsPerOp": 111.01,
+    "TouchNsPerOp": 11.86,
+    "SnapshotNsPerOp": 1013.29
+  }
+]
