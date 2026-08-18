@@ -3,6 +3,7 @@ using MarketData.Common.Server;
 using System;
 using System.Collections.Generic;
 using System.Data.Common;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -18,53 +19,96 @@ namespace MarketData.Server
             _spinTask = GenerateUpdatesAsync(new WeakReference<Orderbook>(this), instrument, service, _disposedSource);
         }
 
+        /// <summary>
+        /// Tick on which the generator wakes. Task.Delay cannot resolve sub-millisecond waits, so
+        /// the generator wakes on a fixed cadence and emits however many updates fell due, rather
+        /// than sleeping once per update. Update rates below 1/tick stay evenly spaced.
+        /// </summary>
+        private static readonly TimeSpan _tick = TimeSpan.FromMilliseconds(1);
+
         private static async Task GenerateUpdatesAsync(WeakReference<Orderbook> orderbook,
             Instrument instrument,
             IOrderbookService service, 
             TaskCompletionSource disposedSource)
         {
-            var random = new Random(DateTime.Now.Millisecond);
+            var random = new Random(instrument.Id * 7919 + DateTime.Now.Millisecond);
+            var specifications = instrument.Specifications;
+
+            // System.Text.Json on .NET 6 fills missing constructor parameters with default(T) rather
+            // than the declared default, so a config that omits UpdatesPerSecond would otherwise
+            // deserialise to a rate of zero and produce a silent feed. Treat non-positive as unset.
+            var updatesPerSecond = specifications.UpdatesPerSecond > 0 ? specifications.UpdatesPerSecond : 1.0;
+            var updatesPerTick = updatesPerSecond * _tick.TotalSeconds;
+            var stopwatch = Stopwatch.StartNew();
+
+            var scheduled = TimeSpan.Zero;
+            var due = 0d;
 
             while (true)
             {
-                if (!orderbook.TryGetTarget(out var model))
-                    return;
-
                 try
                 {
-                    await Task.WhenAny(Task.Delay(TimeSpan.FromSeconds(random.NextDouble() * 2)), 
-                        disposedSource.Task).ConfigureAwait(false); 
+                    scheduled += _tick;
+                    var wait = scheduled - stopwatch.Elapsed;
+
+                    if (wait > TimeSpan.Zero)
+                        await Task.WhenAny(Task.Delay(wait), disposedSource.Task).ConfigureAwait(false);
+                    else if (-wait > _lagResetThreshold)
+                        scheduled = stopwatch.Elapsed; // fell far behind; re-anchor instead of stampeding
 
                     if (disposedSource.Task.IsCompleted)
                         return;
 
-                    OrderbookUpdate update = null;
+                    if (!orderbook.TryGetTarget(out var model))
+                        return;
 
-                    if (random.NextDouble() > 0.95)
+                    try
                     {
-                        var snapshot = model.Refresh(random, instrument);
-                        update = new OrderbookUpdate(
-                            new OrderbookSnapshotUpdate(instrument.Id, snapshot.Bids, snapshot.Asks));
+                        due += updatesPerTick;
+
+                        while (due >= 1d)
+                        {
+                            due -= 1d;
+                            await PublishUpdateAsync(model, random, instrument, service).ConfigureAwait(false);
+                        }
                     }
-                    else
+                    finally
                     {
-                        var incremental = model.Update(random, instrument);
-                        update = new OrderbookUpdate(
-                            new OrderbookIncrementalUpdate(instrument.Id, incremental.UpdateType, incremental.Level));
+                        model = null;
                     }
-                    
-                    await service.OnOrderbookUpdateAsync(update).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Failed to perform orderbook update: {ex}");
                 }
-                finally
-                {
-                    model = null;
-                }
             }
         }
+
+        private static ValueTask PublishUpdateAsync(Orderbook model, Random random, Instrument instrument, IOrderbookService service)
+        {
+            OrderbookUpdate update = null;
+
+            if (random.NextDouble() < instrument.Specifications.SnapshotProbability)
+            {
+                var snapshot = model.Refresh(random, instrument);
+                update = new OrderbookUpdate(
+                    new OrderbookSnapshotUpdate(instrument.Id, snapshot.Bids, snapshot.Asks));
+            }
+            else
+            {
+                var incremental = model.Update(random, instrument);
+                update = new OrderbookUpdate(
+                    new OrderbookIncrementalUpdate(instrument.Id, incremental.UpdateType, incremental.Level));
+            }
+
+            // Stamped as late as possible before the update enters the dissemination path, so the
+            // subscriber-side delta measures queueing, fan-out and transport rather than generation.
+            update = update with { SourceTimestamp = Stopwatch.GetTimestamp() };
+
+            return service.OnOrderbookUpdateAsync(update);
+        }
+
+        private static readonly TimeSpan _lagResetThreshold = TimeSpan.FromMilliseconds(250);
 
         private OrderbookLevelUpdate Update(Random random, Instrument instrument)
         {
@@ -88,16 +132,18 @@ namespace MarketData.Server
             sortedLevels = buy ? _bids : _asks;
 
             var replace = levels.Count == instrument.Specifications.Depth;
-            var remove = random.NextDouble() < (levels.Count / (double)(instrument.Specifications.Depth + 1));
-            var index = random.Next(0, levels.Count - 1);
+            var remove = levels.Count > 0
+                && random.NextDouble() < (levels.Count / (double)(instrument.Specifications.Depth + 1));
 
+            // The index is only meaningful for Remove/Replace, and Random.Next uses an exclusive
+            // upper bound, so it must be sampled from [0, Count) rather than [0, Count - 1).
             if (remove)
             {
-                return RemoveLevel(index, levels, sortedLevels);
+                return RemoveLevel(random.Next(0, levels.Count), levels, sortedLevels);
             }
             else if (replace)
             {
-                return ReplaceLevel(index, levels, sortedLevels, GetQuantity());
+                return ReplaceLevel(random.Next(0, levels.Count), levels, sortedLevels, GetQuantity());
             }
             else
             {
@@ -120,9 +166,10 @@ namespace MarketData.Server
                 }
                 else
                 {
-                    var minimum = oppositeSortedLevels.Min;
-                    var maximum = oppositeSortedLevels.Max;
-                    level = new OrderbookLevel(buy ? maximum.Price - 1 : minimum.Price + 1, buy, quantity);
+                    // Both comparers order worst-price-first, so Max is the far side's touch on
+                    // either side. Seeding an ask from Min (the *worst* bid) crossed the book.
+                    var best = oppositeSortedLevels.Max;
+                    level = new OrderbookLevel(buy ? best.Price - 1 : best.Price + 1, buy, quantity);
                 }
             }
             else

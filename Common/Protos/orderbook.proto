@@ -58,6 +58,10 @@ message OrderbookUpdate
         OrderbookSnapshotUpdate Snapshot = 2;
         OrderbookIncrementalUpdate Incremental = 3;
     }
+    // Monotonic timestamp (Stopwatch ticks) taken when the matching engine produced the
+    // update, before it entered the dissemination path. Subscribers on the same host
+    // subtract it from their own Stopwatch reading to get end-to-end dissemination latency.
+    int64 SourceTimestamp = 4;
 }
 
 service OrderbookService
