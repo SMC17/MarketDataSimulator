@@ -361,3 +361,7 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# Benchmark artefacts: per-run server logs and generated configs are reproducible
+# from bench/run.py, so only the result JSON is kept.
+bench/results/*.log
+bench/configs/

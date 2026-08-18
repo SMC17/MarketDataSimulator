@@ -71,7 +71,8 @@ namespace MarketData.Common.Client
 
         private static async Task HandleResponsesAsync(IAsyncStreamReader<Proto.OrderbookUpdate> responseStream, TaskCompletionSource shutdownSource)
         {
-            while (await responseStream.MoveNext().ConfigureAwait(false))
+            // A MoveNext() around ReadAllAsync() consumed and discarded one message per outer
+            // iteration - in practice the initial snapshot - so enumerate the stream just once.
             {
                 await foreach (var response in responseStream.ReadAllAsync().ConfigureAwait(false))
                 {

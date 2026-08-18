@@ -16,6 +16,12 @@ namespace MarketData.Common
     {
         public OrderbookUpdate(OrderbookSnapshotUpdate Snapshot) : this(Snapshot, null) { }
         public OrderbookUpdate(OrderbookIncrementalUpdate Incremental) : this(null, Incremental) { }
+
+        /// <summary>
+        /// Monotonic <see cref="System.Diagnostics.Stopwatch"/> timestamp taken when the update was
+        /// produced, carried to the subscriber so dissemination latency can be measured end to end.
+        /// </summary>
+        public long SourceTimestamp { get; init; }
         public bool IsSnapshot => Snapshot is not null;
         public bool IsEmptySnapshot => IsSnapshot && Snapshot.Asks.Count is 0 && Snapshot.Bids.Count is 0;
         public int InstrumentId => Snapshot?.InstrumentId ?? Incremental.InstrumentId;

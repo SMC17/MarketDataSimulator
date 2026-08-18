@@ -2,6 +2,7 @@
 using Proto;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Channels;
@@ -14,14 +15,42 @@ namespace MarketData.Common.Server
         Task StartAsync();
         Task StopAsync();
         ValueTask OnOrderbookUpdateAsync(MarketData.Common.OrderbookUpdate update);
+        OrderbookServiceStatistics GetStatistics();
     }
+
+    /// <summary>
+    /// Point-in-time view of the dissemination path. <see cref="QueuedUpdates"/> is the important
+    /// one under load: a queue that grows without bound means the fan-out is no longer keeping up
+    /// with the matching engine, and subscriber latency is about to run away.
+    /// </summary>
+    public record OrderbookServiceStatistics(
+        int ConnectedClients,
+        int QueuedUpdates,
+        int PeakQueuedUpdates,
+        long PublishedUpdates,
+        long DisseminatedUpdates,
+        long SentMessages,
+        long DroppedUpdates,
+        long FailedSends,
+        long OutboundQueued,
+        int MaxOutboundQueued);
     public class OrderbookService : Proto.OrderbookService.OrderbookServiceBase, IOrderbookService
     {
         public int Port { get; }
-        public OrderbookService(int port, IOrderbookManager orderbookManager)
+
+        /// <summary>
+        /// Per-client connect/subscribe logging. Console writes are serialised on a global lock, so
+        /// with thousands of subscribers the logging alone dominates the measurement; load runs
+        /// turn it off.
+        /// </summary>
+        public bool VerboseLogging { get; }
+
+        public OrderbookService(int port, IOrderbookManager orderbookManager, bool verboseLogging = true, int queueCapacity = 1024)
         {
             Port = port;
             _orderbookManager = orderbookManager;
+            VerboseLogging = verboseLogging;
+            _queueCapacity = queueCapacity;
 
             _incrementalUpdateTask = ProcessIncrementalUpdatesAsync(new WeakReference<OrderbookService>(this), _orderbookUpdateChannel.Reader, _shutdownSource);
         }
@@ -32,7 +61,6 @@ namespace MarketData.Common.Server
         {
             while (true)
             {
-                var pendingClients = new List<ServerClient>();
                 try
                 {
                     var readTask = reader.WaitToReadAsync();
@@ -54,9 +82,12 @@ namespace MarketData.Common.Server
                     if (!model.TryGetTarget(out var service))
                         return;
 
+                    Interlocked.Decrement(ref service._queuedUpdates);
+
                     try
                     {
-                        await service.HandleIncrementalUpdateAsync(update).ConfigureAwait(false);
+                        service.Broadcast(update);
+                        Interlocked.Increment(ref service._disseminatedUpdates);
                     }
                     finally
                     {
@@ -70,17 +101,70 @@ namespace MarketData.Common.Server
             }
         }
 
-        private async Task HandleIncrementalUpdateAsync(OrderbookUpdate update)
+        /// <summary>
+        /// Fans one update out to every subscriber of its instrument. Encoding happens once for the
+        /// whole population and each subscriber gets a queue hand-off, so the cost per subscriber is
+        /// a set lookup and a bounded-queue write rather than an awaited network round trip.
+        /// </summary>
+        private void Broadcast(OrderbookUpdate update)
         {
-            List<ServerClient> clients = null;
+            // Read without a lock: the array is replaced on connect/disconnect, never mutated.
+            var clients = _clientSnapshot;
 
-            lock (_clientsLock)
-                clients = _clients.Values.Where(i => i.Ids.Contains(update.InstrumentId)).ToList();
-
-            if (!clients.Any())
+            if (clients.Length == 0)
                 return;
 
-            await Task.WhenAll(clients.Select(i => i.SendAsync(update, default))).ConfigureAwait(false);
+            var instrumentId = update.InstrumentId;
+            var isSnapshot = update.IsSnapshot;
+            var isEmptySnapshot = update.IsEmptySnapshot;
+            Proto.OrderbookUpdate message = null;
+
+            for (var i = 0; i < clients.Length; i++)
+            {
+                var client = clients[i];
+
+                if (!client.IsSubscribedTo(instrumentId) && !isEmptySnapshot)
+                    continue;
+
+                message ??= ProtoAdapter.ToProto(update);
+
+                if (client.TryEnqueue(message, instrumentId, isSnapshot, isEmptySnapshot))
+                    Interlocked.Increment(ref _sentMessages);
+                else
+                    Interlocked.Increment(ref _droppedUpdates);
+            }
+        }
+
+        public OrderbookServiceStatistics GetStatistics()
+        {
+            var snapshot = _clientSnapshot;
+            var clients = snapshot.Length;
+            long liveDrops = 0;
+            long outboundQueued = 0;
+            var maxOutboundQueued = 0;
+
+            for (var i = 0; i < snapshot.Length; i++)
+            {
+                liveDrops += snapshot[i].DroppedUpdates;
+
+                var queued = snapshot[i].QueuedOutbound;
+                outboundQueued += queued;
+
+                if (queued > maxOutboundQueued)
+                    maxOutboundQueued = queued;
+            }
+
+            return new OrderbookServiceStatistics(
+                clients,
+                (int)Interlocked.Read(ref _queuedUpdates),
+                (int)Interlocked.Exchange(ref _peakQueuedUpdates, 0),
+                Interlocked.Read(ref _publishedUpdates),
+                Interlocked.Read(ref _disseminatedUpdates),
+                Interlocked.Read(ref _sentMessages),
+                Interlocked.Read(ref _droppedUpdates) + liveDrops,
+                Interlocked.Read(ref _failedSends),
+                outboundQueued,
+                maxOutboundQueued);
         }
 
         public Task StartAsync()
@@ -109,34 +193,57 @@ namespace MarketData.Common.Server
         {
             try
             {
-                var client = new ServerClient(context.Peer, responseStream);
+                var client = new ServerClient(context.Peer, responseStream, _queueCapacity);
 
                 lock (_clientsLock)
-                    _clients.Add(client.Host, client);
+                {
+                    _clients.Add(client.Id, client);
+                    _clientSnapshot = _clients.Values.ToArray();
+                }
 
-                Console.WriteLine($"Added client {client.Host}");
+                if (VerboseLogging)
+                    Console.WriteLine($"Added client {client.Host}");
 
                 try
                 {
-                    var streamingCompletionSource = new TaskCompletionSource();
                     using (var streamingCompleteTokenSource = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken))
-                    using (var streamingCompleteRegistration = streamingCompleteTokenSource.Token.Register(() => streamingCompletionSource.SetResult()))
-                    using (var readClientSubscriptionRequestsTask = ReadClientSubscriptionRequestsAsync(requestStream, client, streamingCompleteTokenSource.Token))
                     {
-                        await Task.WhenAny(streamingCompletionSource.Task, readClientSubscriptionRequestsTask).ConfigureAwait(false);
+                        // Inbound subscription requests and outbound dissemination run concurrently
+                        // for the life of the call. Note these are deliberately not disposed:
+                        // Task.Dispose throws on a task that has not completed, and WhenAny returns
+                        // with one side still running.
+                        var readClientSubscriptionRequestsTask = ReadClientSubscriptionRequestsAsync(requestStream, client, streamingCompleteTokenSource.Token);
+                        var pumpTask = client.PumpAsync(streamingCompleteTokenSource.Token);
 
-                        if (streamingCompletionSource.Task.IsCompleted)
-                            return;
+                        await Task.WhenAny(readClientSubscriptionRequestsTask, pumpTask).ConfigureAwait(false);
 
-                        await readClientSubscriptionRequestsTask.ConfigureAwait(false);
+                        // Whichever side finished, the call is over: release the other one.
+                        streamingCompleteTokenSource.Cancel();
+                        client.Complete();
+
+                        try
+                        {
+                            await Task.WhenAll(readClientSubscriptionRequestsTask, pumpTask).ConfigureAwait(false);
+                        }
+                        catch (Exception)
+                        {
+                            // The stream is already going away; teardown errors are not interesting.
+                        }
                     }
                 }
                 finally
                 {
                     lock (_clientsLock)
-                        _clients.Remove(client.Host);
+                    {
+                        _clients.Remove(client.Id);
+                        _clientSnapshot = _clients.Values.ToArray();
+                    }
 
-                    Console.WriteLine($"Removed client {client.Host}");
+                    client.Complete();
+                    Interlocked.Add(ref _droppedUpdates, client.DroppedUpdates);
+
+                    if (VerboseLogging)
+                        Console.WriteLine($"Removed client {client.Host}");
                 }
             }
             catch (Exception e)
@@ -166,10 +273,10 @@ namespace MarketData.Common.Server
                 current.Subscribe?.Ids.ToHashSet(), 
                 current.Unsubscribe?.Ids.ToHashSet());
 
-            if (addedSubscriptions.Any())
+            if (VerboseLogging && addedSubscriptions.Any())
                 Console.WriteLine($"{client.Host} subscribed to {string.Join(",", addedSubscriptions)}");
 
-            if (removedSubscriptions.Any())
+            if (VerboseLogging && removedSubscriptions.Any())
                 Console.WriteLine($"{client.Host} unsubscribed from {string.Join(",", removedSubscriptions)}");
 
             var removedOrderbooks = new List<OrderbookSnapshotUpdate>();
@@ -181,10 +288,22 @@ namespace MarketData.Common.Server
             foreach (var addedSubscription in addedSubscriptions)
                 addedOrderbooks.Add(_orderbookManager.GetSnapshot(addedSubscription));
 
-            var removedOrderbookSendTask = Task.WhenAll(removedOrderbooks.Select(i => client.SendAsync(new OrderbookUpdate(i), default)));
-            var addedOrderbookSendTask = Task.WhenAll(addedOrderbooks.Select(i => client.SendAsync(new OrderbookUpdate(i), default)));
+            var stamp = Stopwatch.GetTimestamp();
 
-            await Task.WhenAll(removedOrderbookSendTask, addedOrderbookSendTask).ConfigureAwait(false);
+            // Routed through the subscriber's own queue like any broadcast update, so a snapshot can
+            // never overtake or be overtaken by the incrementals that follow it.
+            foreach (var orderbook in removedOrderbooks.Concat(addedOrderbooks))
+                EnqueueDirect(client, new OrderbookUpdate(orderbook) { SourceTimestamp = stamp });
+
+            await Task.CompletedTask.ConfigureAwait(false);
+        }
+
+        private void EnqueueDirect(ServerClient client, OrderbookUpdate update)
+        {
+            if (client.TryEnqueue(ProtoAdapter.ToProto(update), update.InstrumentId, update.IsSnapshot, update.IsEmptySnapshot))
+                Interlocked.Increment(ref _sentMessages);
+            else
+                Interlocked.Increment(ref _droppedUpdates);
         }
 
         public Task StopAsync()
@@ -200,6 +319,15 @@ namespace MarketData.Common.Server
             if (_server == null)
                 return ValueTask.CompletedTask;
 
+            Interlocked.Increment(ref _publishedUpdates);
+
+            var depth = Interlocked.Increment(ref _queuedUpdates);
+
+            // Watermark rather than instantaneous depth: a backlog that forms and drains between
+            // two samples is still the fan-out failing to keep up with the matching engine.
+            if (depth > Interlocked.Read(ref _peakQueuedUpdates))
+                Interlocked.Exchange(ref _peakQueuedUpdates, depth);
+
             return _orderbookUpdateChannel.Writer.WriteAsync(update);
         }
 
@@ -214,10 +342,19 @@ namespace MarketData.Common.Server
         }
 
 
+        private long _queuedUpdates;
+        private long _peakQueuedUpdates;
+        private long _publishedUpdates;
+        private long _disseminatedUpdates;
+        private long _sentMessages;
+        private long _droppedUpdates;
+        private long _failedSends;
+        private readonly int _queueCapacity;
+        private volatile ServerClient[] _clientSnapshot = Array.Empty<ServerClient>();
         private Grpc.Core.Server _server = null;
         private readonly IOrderbookManager _orderbookManager = null;
         private static readonly HashSet<int> _empty = new HashSet<int>();
-        private readonly Dictionary<string, ServerClient> _clients = new Dictionary<string, ServerClient>();
+        private readonly Dictionary<long, ServerClient> _clients = new Dictionary<long, ServerClient>();
         private readonly object _clientsLock = new object();
         private readonly Task _incrementalUpdateTask = null;
         private readonly TaskCompletionSource _shutdownSource = new TaskCompletionSource();
