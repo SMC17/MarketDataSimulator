@@ -8,6 +8,13 @@ using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
+// Two suites live in this harness: the default dissemination benchmark, and a micro-benchmark
+// of the order book implementations themselves.
+// Environment.Exit rather than return: the dissemination suite ends with lingering stream
+// readers, and both suites exit the same way so the harness has one shutdown path.
+if (args.Length > 0 && args[0] == "books")
+    Environment.Exit(BookBenchmark.Run(args.Skip(1).ToArray()));
+
 var options = BenchOptions.Parse(args);
 
 // Client and server share this host's monotonic clock, so the server's Stopwatch timestamp can be
