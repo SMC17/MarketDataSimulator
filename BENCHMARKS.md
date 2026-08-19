@@ -61,7 +61,7 @@ At matched subscriber counts:
 | 100 | 1.61 ms | **0.31 ms** | **5.3×** |
 | 500 | 8.54 ms | **0.85 ms** | **10.1×** |
 
-Multicast was also measured at 250, 1,000, 2,000, 4,000, 6,000, 8,000 subscribers, where unicast was not run — see the multicast sweep above.
+Multicast was also measured at 250, 1,000, 2,000, 4,000, 6,000, 8,000 subscribers, where unicast was not run; those points are in the multicast sweep in BENCHMARKS.md.
 <!-- /generated -->
 
 Peak measured throughput was **972,472 messages/second** delivered to 1,000
@@ -388,7 +388,7 @@ producing four identical rows with different labels.
 | 100 | 1.61 ms | **0.31 ms** | **5.3×** |
 | 500 | 8.54 ms | **0.85 ms** | **10.1×** |
 
-Multicast was also measured at 250, 1,000, 2,000, 4,000, 6,000, 8,000 subscribers, where unicast was not run — see the multicast sweep above.
+Multicast was also measured at 250, 1,000, 2,000, 4,000, 6,000, 8,000 subscribers, where unicast was not run; those points are in the multicast sweep in BENCHMARKS.md.
 <!-- /generated -->
 
 Cost per delivered message, at each transport's sustained ceiling:
