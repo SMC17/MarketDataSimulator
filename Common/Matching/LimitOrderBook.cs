@@ -224,7 +224,6 @@ namespace MarketData.Common.Matching
 
             _pool.Clear();
             _orderPool.Clear();
-            _priority = 0;
         }
 
         // ------------------------------------------------------------------ matching
@@ -325,7 +324,6 @@ namespace MarketData.Common.Matching
             order.Price = price;
             order.Quantity = quantity;
             order.Remaining = quantity;
-            order.Priority = ++_priority;
             order.Level = level;
 
             // Joins at the tail: newest order, worst time priority.
@@ -447,6 +445,5 @@ namespace MarketData.Common.Matching
         private readonly Dictionary<ulong, Order> _orders = new Dictionary<ulong, Order>();
         private readonly List<OrderLevel> _pool = new List<OrderLevel>();
         private readonly List<Order> _orderPool = new List<Order>();
-        private ulong _priority;
     }
 }
