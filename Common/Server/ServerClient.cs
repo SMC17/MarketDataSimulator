@@ -55,6 +55,9 @@ namespace MarketData.Common.Server
         /// <summary>Updates discarded because this subscriber could not keep up.</summary>
         public long DroppedUpdates => Interlocked.Read(ref _droppedUpdates);
 
+        /// <summary>Stream writes that failed before teardown.</summary>
+        public long FailedSends => Interlocked.Read(ref _failedSends);
+
         public IReadOnlySet<int> Ids => _subscribedIds;
 
         public ServerClient(string host, IServerStreamWriter<Proto.OrderbookUpdate> stream, int queueCapacity)
@@ -169,7 +172,7 @@ namespace MarketData.Common.Server
             }
             catch (Exception)
             {
-                // The subscriber's stream is gone; the call teardown path removes it.
+                Interlocked.Increment(ref _failedSends);
             }
         }
 
@@ -182,6 +185,7 @@ namespace MarketData.Common.Server
         private static long _nextId;
         private static readonly HashSet<int> _empty = new HashSet<int>();
         private long _droppedUpdates;
+        private long _failedSends;
         private volatile bool _completed;
         private readonly IServerStreamWriter<Proto.OrderbookUpdate> _stream = null;
         private readonly Channel<Proto.OrderbookUpdate> _outbound = null;

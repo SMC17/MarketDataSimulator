@@ -56,7 +56,7 @@ namespace MarketData.Common.Governance
     public sealed record MessageSchema(string Name, byte TypeCode, IReadOnlyList<SchemaField> Fields)
     {
         /// <summary>Bytes the message occupies, taken from the furthest field.</summary>
-        public int Size => Fields.Count == 0 ? 0 : Fields.Max(field => field.End);
+        public int Size => Fields.Count == 0 ? 0 : Fields.Max(schemaField => schemaField.End);
 
         /// <summary>Fields a reader at <paramref name="version"/> is expected to know.</summary>
         public IEnumerable<SchemaField> FieldsAsOf(int version)
