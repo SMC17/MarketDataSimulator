@@ -49,57 +49,73 @@ namespace MarketData.Bench
                 }
             }
 
-            var referencePath = Directory.GetFiles(directory, "*orderbook*.csv").FirstOrDefault();
+            var sessions = LobsterSessions.Discover(directory);
 
-            if (referencePath is null)
+            if (sessions.Count == 0)
             {
-                Console.Error.WriteLine($"No LOBSTER orderbook file in '{directory}'. Run scripts/fetch-lobster.sh.");
+                Console.Error.WriteLine($"No LOBSTER sessions in '{directory}'. Run scripts/fetch-lobster.sh.");
                 return 2;
             }
 
-            var reference = File.ReadAllBytes(referencePath);
-            var quotes = LoadQuotes(reference);
+            var all = new List<SessionResult>();
 
-            Console.WriteLine($"Session   : {Path.GetFileName(referencePath)}");
-            Console.WriteLine($"Quotes    : {quotes.Count:N0} top-of-book observations");
-
-            var spreads = quotes.Where(q => q.IsTwoSided).Select(q => (double)q.Spread).ToArray();
-            Console.WriteLine($"Spread    : mean {spreads.Average() / 10000.0:F4} dollars, " +
-                              $"median {Median(spreads) / 10000.0:F4}, min {spreads.Min() / 10000.0:F4}");
-            Console.WriteLine();
-
-            Console.WriteLine("Order flow imbalance vs mid-price change, non-overlapping buckets.");
-            Console.WriteLine("Contemporaneous = same bucket. Predictive = the NEXT bucket's move.");
-            Console.WriteLine();
-            Console.WriteLine($"{"Bucket",8} {"Samples",9} {"Contemp R2",12} {"slope",10} {"t",9}   " +
-                              $"{"Predict R2",11} {"slope",10} {"t",9}");
-            Console.WriteLine(new string('-', 92));
-
-            var results = new List<BucketResult>();
-
-            foreach (var size in buckets)
+            foreach (var session in sessions)
             {
-                var (contemporaneous, predictive) = Study(quotes, size);
+                var reference = File.ReadAllBytes(session.ReferencePath);
+                var quotes = LoadQuotes(reference);
+                var twoSided = quotes.Where(q => q.IsTwoSided).ToArray();
 
-                Console.WriteLine($"{size,8} {contemporaneous.Count,9:N0} {contemporaneous.RSquared,11:P2} " +
-                                  $"{contemporaneous.Slope,10:F5} {contemporaneous.SlopeTStatistic,9:F1}   " +
-                                  $"{predictive.RSquared,10:P2} {predictive.Slope,10:F5} {predictive.SlopeTStatistic,9:F1}");
+                if (twoSided.Length == 0)
+                    continue;
 
-                results.Add(new BucketResult(size, contemporaneous.Count,
-                    Math.Round(contemporaneous.RSquared, 6), Math.Round(contemporaneous.Slope, 8),
-                    Math.Round(contemporaneous.SlopeTStatistic, 2),
-                    Math.Round(predictive.RSquared, 6), Math.Round(predictive.Slope, 8),
-                    Math.Round(predictive.SlopeTStatistic, 2)));
+                var spreads = twoSided.Select(q => (double)q.Spread).ToArray();
+                var midDollars = twoSided.Select(q => q.MidHalfTicks / 2.0 / 10000.0).ToArray();
+                var meanSpread = spreads.Average() / 10000.0;
+                var meanMid = midDollars.Average();
+
+                Console.WriteLine();
+                Console.WriteLine(new string('=', 92));
+                Console.WriteLine($"{session}   {quotes.Count:N0} quotes   " +
+                                  $"mid ~${meanMid:F2}   spread {meanSpread:F4} " +
+                                  $"({meanSpread / meanMid * 10000:F1} bp, {meanSpread / 0.01:F1} ticks)");
+                Console.WriteLine(new string('=', 92));
+                Console.WriteLine();
+
+                Console.WriteLine($"{"Bucket",8} {"Samples",9} {"Contemp R2",12} {"slope",10} {"t",9}   " +
+                                  $"{"Predict R2",11} {"slope",10} {"t",9}");
+                Console.WriteLine(new string('-', 92));
+
+                var results = new List<BucketResult>();
+
+                foreach (var size in buckets)
+                {
+                    var (contemporaneous, predictive) = Study(quotes, size);
+
+                    Console.WriteLine($"{size,8} {contemporaneous.Count,9:N0} {contemporaneous.RSquared,11:P2} " +
+                                      $"{contemporaneous.Slope,10:F5} {contemporaneous.SlopeTStatistic,9:F1}   " +
+                                      $"{predictive.RSquared,10:P2} {predictive.Slope,10:F5} {predictive.SlopeTStatistic,9:F1}");
+
+                    results.Add(new BucketResult(size, contemporaneous.Count,
+                        Math.Round(contemporaneous.RSquared, 6), Math.Round(contemporaneous.Slope, 8),
+                        Math.Round(contemporaneous.SlopeTStatistic, 2),
+                        Math.Round(predictive.RSquared, 6), Math.Round(predictive.Slope, 8),
+                        Math.Round(predictive.SlopeTStatistic, 2)));
+                }
+
+                all.Add(new SessionResult(session.Symbol, session.ToString(), quotes.Count,
+                    Math.Round(meanMid, 2), Math.Round(meanSpread, 5),
+                    Math.Round(meanSpread / meanMid * 10000, 2), Math.Round(meanSpread / 0.01, 2), results));
             }
 
             Console.WriteLine();
-            Console.WriteLine("Slope is half-ticks of mid change per unit of imbalance; a $0.0001 tick means");
-            Console.WriteLine("2 half-ticks = $0.0001. Positive slope: buying pressure raises the price.");
+            Console.WriteLine("Slope is half-ticks of mid change per unit of imbalance; a $0.0001 price unit");
+            Console.WriteLine("means 2 half-ticks = $0.0001. Positive slope: buying pressure raises the price.");
+            Console.WriteLine("Buckets are non-overlapping; predictive uses the PREVIOUS bucket's imbalance.");
 
             if (outputPath is not null)
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-                File.WriteAllText(outputPath, JsonSerializer.Serialize(results,
+                File.WriteAllText(outputPath, JsonSerializer.Serialize(all,
                     new JsonSerializerOptions { WriteIndented = true }));
                 Console.WriteLine($"Wrote {outputPath}");
             }
@@ -156,10 +172,13 @@ namespace MarketData.Bench
             return (contemporaneous, predictive);
         }
 
+        private static (OnlineRegression Contemporaneous, OnlineRegression Predictive) Study(
+            Quote[] quotes, int bucketSize) => Study(quotes.ToList(), bucketSize);
+
         private static List<Quote> LoadQuotes(ReadOnlySpan<byte> reference)
         {
             var reader = new LobsterReader(reference);
-            Span<int> row = stackalloc int[LobsterReplay.LevelsInReference * 4];
+            Span<int> row = stackalloc int[LobsterReplay.MaxLevels * 4];
             var quotes = new List<Quote>(300_000);
 
             while (reader.TryReadBookRow(row, out var fields) && fields >= 4)
@@ -174,6 +193,10 @@ namespace MarketData.Bench
             Array.Sort(sorted);
             return sorted.Length == 0 ? 0 : sorted[sorted.Length / 2];
         }
+
+        private record SessionResult(string Symbol, string Session, int Quotes, double MeanMid,
+            double MeanSpreadDollars, double MeanSpreadBasisPoints, double MeanSpreadTicks,
+            List<BucketResult> Buckets);
 
         private record BucketResult(int BucketEvents, long Samples,
             double ContemporaneousRSquared, double ContemporaneousSlope, double ContemporaneousT,

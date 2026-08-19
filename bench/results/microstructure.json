@@ -1,62 +1,215 @@
 [
   {
-    "BucketEvents": 10,
-    "Samples": 26974,
-    "ContemporaneousRSquared": 0.061473,
-    "ContemporaneousSlope": 0.19181747,
-    "ContemporaneousT": 42.03,
-    "PredictiveRSquared": 0.000594,
-    "PredictiveSlope": 0.01873805,
-    "PredictiveT": 4
+    "Symbol": "AMZN",
+    "Session": "AMZN 2012-06-21 level 10",
+    "Quotes": 269748,
+    "MeanMid": 222.72,
+    "MeanSpreadDollars": 0.13086,
+    "MeanSpreadBasisPoints": 5.88,
+    "MeanSpreadTicks": 13.09,
+    "Buckets": [
+      {
+        "BucketEvents": 10,
+        "Samples": 26974,
+        "ContemporaneousRSquared": 0.061473,
+        "ContemporaneousSlope": 0.19181747,
+        "ContemporaneousT": 42.03,
+        "PredictiveRSquared": 0.000594,
+        "PredictiveSlope": 0.01873805,
+        "PredictiveT": 4
+      },
+      {
+        "BucketEvents": 25,
+        "Samples": 10789,
+        "ContemporaneousRSquared": 0.084386,
+        "ContemporaneousSlope": 0.21641957,
+        "ContemporaneousT": 31.53,
+        "PredictiveRSquared": 0.003772,
+        "PredictiveSlope": 0.04545719,
+        "PredictiveT": 6.39
+      },
+      {
+        "BucketEvents": 50,
+        "Samples": 5394,
+        "ContemporaneousRSquared": 0.107889,
+        "ContemporaneousSlope": 0.24812905,
+        "ContemporaneousT": 25.54,
+        "PredictiveRSquared": 0.00871,
+        "PredictiveSlope": 0.07009147,
+        "PredictiveT": 6.88
+      },
+      {
+        "BucketEvents": 100,
+        "Samples": 2697,
+        "ContemporaneousRSquared": 0.146925,
+        "ContemporaneousSlope": 0.29498549,
+        "ContemporaneousT": 21.54,
+        "PredictiveRSquared": 0.007139,
+        "PredictiveSlope": 0.06434638,
+        "PredictiveT": 4.4
+      },
+      {
+        "BucketEvents": 250,
+        "Samples": 1078,
+        "ContemporaneousRSquared": 0.25557,
+        "ContemporaneousSlope": 0.43831732,
+        "ContemporaneousT": 19.22,
+        "PredictiveRSquared": 0.004448,
+        "PredictiveSlope": 0.05734953,
+        "PredictiveT": 2.19
+      },
+      {
+        "BucketEvents": 500,
+        "Samples": 539,
+        "ContemporaneousRSquared": 0.306636,
+        "ContemporaneousSlope": 0.45819751,
+        "ContemporaneousT": 15.41,
+        "PredictiveRSquared": 3E-05,
+        "PredictiveSlope": 0.00442794,
+        "PredictiveT": 0.13
+      }
+    ]
   },
   {
-    "BucketEvents": 25,
-    "Samples": 10789,
-    "ContemporaneousRSquared": 0.084386,
-    "ContemporaneousSlope": 0.21641957,
-    "ContemporaneousT": 31.53,
-    "PredictiveRSquared": 0.003772,
-    "PredictiveSlope": 0.04545719,
-    "PredictiveT": 6.39
+    "Symbol": "GOOG",
+    "Session": "GOOG 2012-06-21 level 5",
+    "Quotes": 112673,
+    "MeanMid": 570.83,
+    "MeanSpreadDollars": 0.30011,
+    "MeanSpreadBasisPoints": 5.26,
+    "MeanSpreadTicks": 30.01,
+    "Buckets": [
+      {
+        "BucketEvents": 10,
+        "Samples": 11267,
+        "ContemporaneousRSquared": 0.171055,
+        "ContemporaneousSlope": 2.17377389,
+        "ContemporaneousT": 48.21,
+        "PredictiveRSquared": 0.001859,
+        "PredictiveSlope": 0.22652876,
+        "PredictiveT": 4.58
+      },
+      {
+        "BucketEvents": 25,
+        "Samples": 4506,
+        "ContemporaneousRSquared": 0.231393,
+        "ContemporaneousSlope": 2.19687531,
+        "ContemporaneousT": 36.82,
+        "PredictiveRSquared": 0.015339,
+        "PredictiveSlope": 0.56537119,
+        "PredictiveT": 8.38
+      },
+      {
+        "BucketEvents": 50,
+        "Samples": 2253,
+        "ContemporaneousRSquared": 0.279394,
+        "ContemporaneousSlope": 2.17983547,
+        "ContemporaneousT": 29.54,
+        "PredictiveRSquared": 0.024224,
+        "PredictiveSlope": 0.64193206,
+        "PredictiveT": 7.47
+      },
+      {
+        "BucketEvents": 100,
+        "Samples": 1126,
+        "ContemporaneousRSquared": 0.312685,
+        "ContemporaneousSlope": 2.13474597,
+        "ContemporaneousT": 22.61,
+        "PredictiveRSquared": 0.012356,
+        "PredictiveSlope": 0.42389929,
+        "PredictiveT": 3.75
+      },
+      {
+        "BucketEvents": 250,
+        "Samples": 450,
+        "ContemporaneousRSquared": 0.314471,
+        "ContemporaneousSlope": 1.79537354,
+        "ContemporaneousT": 14.34,
+        "PredictiveRSquared": 0.001736,
+        "PredictiveSlope": 0.12897443,
+        "PredictiveT": 0.88
+      },
+      {
+        "BucketEvents": 500,
+        "Samples": 225,
+        "ContemporaneousRSquared": 0.289029,
+        "ContemporaneousSlope": 1.42276397,
+        "ContemporaneousT": 9.52,
+        "PredictiveRSquared": 0.001019,
+        "PredictiveSlope": -0.08154644,
+        "PredictiveT": -0.48
+      }
+    ]
   },
   {
-    "BucketEvents": 50,
-    "Samples": 5394,
-    "ContemporaneousRSquared": 0.107889,
-    "ContemporaneousSlope": 0.24812905,
-    "ContemporaneousT": 25.54,
-    "PredictiveRSquared": 0.00871,
-    "PredictiveSlope": 0.07009147,
-    "PredictiveT": 6.88
-  },
-  {
-    "BucketEvents": 100,
-    "Samples": 2697,
-    "ContemporaneousRSquared": 0.146925,
-    "ContemporaneousSlope": 0.29498549,
-    "ContemporaneousT": 21.54,
-    "PredictiveRSquared": 0.007139,
-    "PredictiveSlope": 0.06434638,
-    "PredictiveT": 4.4
-  },
-  {
-    "BucketEvents": 250,
-    "Samples": 1078,
-    "ContemporaneousRSquared": 0.25557,
-    "ContemporaneousSlope": 0.43831732,
-    "ContemporaneousT": 19.22,
-    "PredictiveRSquared": 0.004448,
-    "PredictiveSlope": 0.05734953,
-    "PredictiveT": 2.19
-  },
-  {
-    "BucketEvents": 500,
-    "Samples": 539,
-    "ContemporaneousRSquared": 0.306636,
-    "ContemporaneousSlope": 0.45819751,
-    "ContemporaneousT": 15.41,
-    "PredictiveRSquared": 3E-05,
-    "PredictiveSlope": 0.00442794,
-    "PredictiveT": 0.13
+    "Symbol": "MSFT",
+    "Session": "MSFT 2012-06-21 level 5",
+    "Quotes": 595800,
+    "MeanMid": 30.55,
+    "MeanSpreadDollars": 0.01253,
+    "MeanSpreadBasisPoints": 4.1,
+    "MeanSpreadTicks": 1.25,
+    "Buckets": [
+      {
+        "BucketEvents": 10,
+        "Samples": 59579,
+        "ContemporaneousRSquared": 0.078,
+        "ContemporaneousSlope": 0.00207802,
+        "ContemporaneousT": 70.99,
+        "PredictiveRSquared": 0.005952,
+        "PredictiveSlope": 0.00057403,
+        "PredictiveT": 18.89
+      },
+      {
+        "BucketEvents": 25,
+        "Samples": 23831,
+        "ContemporaneousRSquared": 0.203468,
+        "ContemporaneousSlope": 0.00281802,
+        "ContemporaneousT": 78.02,
+        "PredictiveRSquared": 0.013028,
+        "PredictiveSlope": 0.00071281,
+        "PredictiveT": 17.74
+      },
+      {
+        "BucketEvents": 50,
+        "Samples": 11915,
+        "ContemporaneousRSquared": 0.346036,
+        "ContemporaneousSlope": 0.00322841,
+        "ContemporaneousT": 79.4,
+        "PredictiveRSquared": 0.037637,
+        "PredictiveSlope": 0.00106173,
+        "PredictiveT": 21.58
+      },
+      {
+        "BucketEvents": 100,
+        "Samples": 5957,
+        "ContemporaneousRSquared": 0.507207,
+        "ContemporaneousSlope": 0.00358064,
+        "ContemporaneousT": 78.29,
+        "PredictiveRSquared": 0.072911,
+        "PredictiveSlope": 0.00135397,
+        "PredictiveT": 21.64
+      },
+      {
+        "BucketEvents": 250,
+        "Samples": 2383,
+        "ContemporaneousRSquared": 0.652387,
+        "ContemporaneousSlope": 0.00382976,
+        "ContemporaneousT": 66.85,
+        "PredictiveRSquared": 0.052597,
+        "PredictiveSlope": 0.00108733,
+        "PredictiveT": 11.49
+      },
+      {
+        "BucketEvents": 500,
+        "Samples": 1191,
+        "ContemporaneousRSquared": 0.706868,
+        "ContemporaneousSlope": 0.0039135,
+        "ContemporaneousT": 53.55,
+        "PredictiveRSquared": 0.015835,
+        "PredictiveSlope": 0.00058818,
+        "PredictiveT": 4.37
+      }
+    ]
   }
 ]

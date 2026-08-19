@@ -41,10 +41,22 @@ namespace MarketData.Tests
             return buffer.ToArray();
         }
 
-        public static TheoryData<string> Implementations() => new TheoryData<string>
+        public static TheoryData<string, string, int> Cases()
         {
-            "SortedArray", "Vectorized", "Ladder", "Tree",
-        };
+            var data = new TheoryData<string, string, int>();
+
+            // Two instruments with deliberately different microstructure and different reference
+            // depths: AMZN at $223 publishes ten levels, MSFT at $30 publishes five and sits
+            // pinned near a one-tick spread. The level count is inferred from the file, so this
+            // also covers that inference.
+            foreach (var implementation in new[] { "SortedArray", "Vectorized", "Ladder", "Tree" })
+            {
+                data.Add(implementation, "AMZN", 10);
+                data.Add(implementation, "MSFT", 5);
+            }
+
+            return data;
+        }
 
         /// <summary>
         /// Given the book as the exchange published it, applying the next real message must
@@ -57,15 +69,21 @@ namespace MarketData.Tests
         /// production feed handler has to get right on every single update.
         /// </remarks>
         [Theory]
-        [MemberData(nameof(Implementations))]
-        public void ReproducesNasdaqBookOnEveryTransition(string implementation)
+        [MemberData(nameof(Cases))]
+        public void ReproducesNasdaqBookOnEveryTransition(string implementation, string symbol, int expectedLevels)
         {
-            var messages = Load("AMZN_message_20k.csv.gz");
-            var reference = Load("AMZN_orderbook_20k.csv.gz");
+            var messages = Load($"{symbol}_message_20k.csv.gz");
+            var reference = Load($"{symbol}_orderbook_20k.csv.gz");
+
+            Assert.Equal(expectedLevels, LobsterReplay.DetectLevels(reference));
+
+            // Bands are per instrument: MSFT traded near $30 and AMZN near $223, and a ladder
+            // sized for one cannot represent the other.
+            var (low, high) = symbol == "MSFT" ? (250_000, 400_000) : (2_100_000, 2_400_000);
 
             var book = implementation == "Ladder"
-                ? new LadderBook(4096, 2_100_000, 2_400_000)
-                : BookFactory.Create(implementation, 4096, 2_400_000);
+                ? new LadderBook(4096, low, high)
+                : BookFactory.Create(implementation, 4096, high);
 
             var result = LobsterReplay.ReplayTransitions(messages, reference, book);
 
@@ -73,7 +91,7 @@ namespace MarketData.Tests
                 $"expected most of the slice to be verifiable, compared {result.RowsCompared}");
 
             Assert.True(result.RowsMatched == result.RowsCompared,
-                $"{implementation} diverged from NASDAQ on {result.RowsCompared - result.RowsMatched} " +
+                $"{implementation} diverged from NASDAQ on {symbol} in {result.RowsCompared - result.RowsMatched} " +
                 $"of {result.RowsCompared} transitions. First: {result.FirstMismatchDetail}");
         }
 
