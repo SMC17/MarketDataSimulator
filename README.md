@@ -19,6 +19,7 @@ This is a research system, not a production venue. The implemented boundary is e
 | Wire protocol | Fixed little-endian v2 packets, session identity, exact length, CRC-32C |
 | Durability | Single-writer segmented WAL, restart repair, CRC-checked checkpoints |
 | Recovery | Bounded reorder, exact TCP gap fill, sparse range index, atomic snapshots |
+| Governance | 128-bit layout fingerprints, conservative compatibility, bitemporal reference data |
 | Validation | Differential/property tests and LOBSTER-derived NASDAQ replay |
 | Analytics | Allocation-free order-flow imbalance, online regression, stylized facts |
 
@@ -71,7 +72,7 @@ record. Bad CRCs, wrong sessions, sequence holes, and missing middle segments fa
 | Policy | Append acknowledgement |
 |---|---|
 | `OsBuffered` | bytes reached the OS page cache; process crash safe, power loss unsafe |
-| `SyncPeriodic` | OS page cache; a timer runs `fsync` every `SyncInterval` while dirty |
+| `SyncPeriodic` | OS page cache; a dedicated thread runs `fsync` every `SyncInterval` while dirty |
 | `SyncEachRecord` | each returned append passed `FileStream.Flush(true)` |
 
 Checkpoints carry format version, session, sequence, exact length, commit trailer, and CRC-32C.
@@ -114,7 +115,7 @@ are generated from the committed JSON; methodology and raw-artifact boundaries a
 | Batched SPSC hand-off | 6.3 ns/item median | 0.066 B/item including harness setup |
 | Matching at 100,000 resting orders | 98.7 ns/cycle median | state preserving |
 | Committed NASDAQ samples | 39,998 transitions per implementation | exact |
-| Seal + journal feed packet | 980.1 ns median | 0 B/op; OS-buffered acknowledgement |
+| Seal + journal feed packet | 813.7 ns median | 0 B/op; OS-buffered acknowledgement |
 | Loopback multicast, 500 subscribers | 485,393 delivered msg/s | 0 gaps; 0 CRC failures |
 <!-- /generated -->
 
@@ -184,6 +185,8 @@ Common/Matching   sequencer-facing order book and depth projection
 Common/Books      aggregated depth structures
 Common/Feed       wire protocol, CRC, multicast, decoder state machine
 Common/Durability journal, checkpoints, sparse range reads, retransmission
+Common/Governance schema fingerprints, compatibility, negotiation
+Common/Reference  effective-dated instruments and venue sessions
 Common/Lobster    exact integer parser and replay oracle
 Common/Analytics  streaming microstructure statistics
 Server            deterministic simulator and validated configuration
@@ -197,7 +200,7 @@ A venue or trading platform would still require:
 
 - a replicated and fenced sequencer, quorum commit, deterministic takeover, and cross-site archive;
 - retention policy, sequencer-thread checkpoints, directory-metadata durability, and repair tooling;
-- schema governance, compatibility tests, reference-data lifecycle, and session calendars;
+- runtime schema negotiation, controlled rollout, and authoritative reference-data distribution;
 - pre-trade risk, credit limits, kill switches, drop copy, audit retention, and authenticated
   entitlements for live and recovery channels;
 - PTP-synchronized clocks with uncertainty, hardware timestamps, CPU/NUMA affinity, and NIC/kernel

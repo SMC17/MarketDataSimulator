@@ -70,20 +70,20 @@ metadata.
 <!-- generated: v2-durability -->
 | Append contract | Policy | Payload | Median | Min–max | Rate | Syncs/trial | Allocation |
 |---|---|---|---|---|---|---|---|
-| OS page cache | OsBuffered | 64 B | 1,098.0 ns | 1,044.8–2,211.1 ns | 910,770/s | 0 | 0 B/op |
-| periodic 1 ms | SyncPeriodic | 64 B | 2,095.6 ns | 1,538.9–6,806.6 ns | 477,187/s | 2 | 0 B/op |
-| group commit 64 | OsBuffered | 64 B | 30,710.7 ns | 24,860.1–39,239.3 ns | 32,562/s | 79 | 0 B/op |
-| fsync each | SyncEachRecord | 64 B | 1,417,223.4 ns | 1,122,536.2–1,477,936.1 ns | 706/s | 5,000 | 0 B/op |
-| seal + packet WAL | OsBuffered | 50 B | 980.1 ns | 826.6–3,048.5 ns | 1,020,263/s | 0 | 0 B/op |
+| OS page cache | OsBuffered | 64 B | 976.7 ns | 958.0–2,088.2 ns | 1,023,815/s | 0 | 0 B/op |
+| periodic 1 ms | SyncPeriodic | 64 B | 2,318.3 ns | 2,149.5–3,507.9 ns | 431,343/s | 4 | 0 B/op |
+| group commit 64 | OsBuffered | 64 B | 27,301.7 ns | 17,837.9–42,412.7 ns | 36,628/s | 79 | 0 B/op |
+| fsync each | SyncEachRecord | 64 B | 972,646.2 ns | 898,242.4–1,196,500.7 ns | 1,028/s | 5,000 | 0 B/op |
+| seal + packet WAL | OsBuffered | 50 B | 813.7 ns | 755.1–1,676.6 ns | 1,228,894/s | 0 | 0 B/op |
 
 | Messages | Checkpoint | Full replay | Checkpoint + tail | Speed-up |
 |---|---|---|---|---|
-| 50,000 | 47,500 | 23.60 ms (22.39–24.74) | 3.42 ms (3.23–3.77) | 6.90× |
+| 50,000 | 47,500 | 24.68 ms (21.00–40.83) | 2.92 ms (2.64–3.84) | 8.45× |
 
 | 10-message range | Queries | Index entries | Median | Min–max | Allocation |
 |---|---|---|---|---|---|
-| sparse index | 100 | 196 | 84.9 µs | 78.2–91.3 µs | 1,736 B/request |
-| segment scan | 100 | 0 | 2,299.8 µs | 895.4–2,635.7 µs | 5,848 B/request |
+| sparse index | 100 | 196 | 73.6 µs | 70.2–81.7 µs | 1,736 B/request |
+| segment scan | 100 | 0 | 1,946.8 µs | 927.1–2,530.3 µs | 5,848 B/request |
 <!-- /generated -->
 
 `OS page cache` includes framing, CRC-32C, and one unbuffered managed write into the kernel cache;
