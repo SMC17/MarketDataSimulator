@@ -8,98 +8,88 @@ using MarketData.Common.Feed;
 
 namespace MarketData.Common.Durability
 {
-    /// <summary>
-    /// A complete book state captured at one sequence, so recovery need not replay from zero.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Without checkpoints, recovery time grows without bound with uptime: a log that has been
-    /// running for a week takes a week's worth of replay to rebuild. That is the difference between
-    /// a system that can be restarted during the day and one that cannot.
-    /// </para>
-    /// <para>
-    /// The invariant that makes this safe is precise: a checkpoint at sequence S plus every
-    /// journalled message after S must reconstruct exactly the same state as replaying every
-    /// message from the beginning. <c>CheckpointTests</c> asserts that equivalence directly rather
-    /// than trusting it, because a checkpoint that is subtly wrong is worse than none - it produces
-    /// a book that is confidently incorrect.
-    /// </para>
-    /// <para>
-    /// Checkpoints are written to their own files rather than inline in the log, and a marker
-    /// record goes into the log pointing at them. That keeps the log append-only and lets an old
-    /// checkpoint be deleted without rewriting anything.
-    /// </para>
-    /// </remarks>
+    /// <summary>Versioned, checksummed full-depth state checkpoint.</summary>
     public static class Checkpoint
     {
-        public const uint Magic = 0x43484B31; // "CHK1"
+        public const uint Magic = 0x43484B32; // CHK2
+        public const ushort Version = 2;
+        public const int HeaderSize = 40;
+        public const int TrailerSize = 8;
+        public const int MaxCheckpointBytes = 256 * 1024 * 1024;
+
+        private const uint CommitMagic = 0xC04D17ED;
         private const string Prefix = "checkpoint-";
         private const string Suffix = ".chk";
+        private const int MaxInstruments = 1_000_000;
+        private const int CrcOffset = 36;
 
-        /// <summary>Writes a checkpoint and records a marker in the journal.</summary>
         public static string Write(string directory, WriteAheadJournal journal, ulong sequence,
             ulong sessionId, IReadOnlyDictionary<int, IOrderBook> books)
         {
-            Directory.CreateDirectory(directory);
+            ArgumentException.ThrowIfNullOrWhiteSpace(directory);
+            ArgumentNullException.ThrowIfNull(journal);
+            ArgumentNullException.ThrowIfNull(books);
+            if (sessionId == 0 || sessionId != journal.SessionId)
+                throw new InvalidDataException("Checkpoint and journal sessions differ.");
+            if (!journal.HasSequencedRecords || sequence > journal.LastSequence)
+                throw new InvalidDataException("Checkpoint is outside the durable prefix.");
+            if (books.Count > MaxInstruments)
+                throw new ArgumentOutOfRangeException(nameof(books));
 
+            var instrumentIds = books.Keys.ToArray();
+            Array.Sort(instrumentIds);
+            var payloadLength = PayloadLength(instrumentIds, books);
+            var totalLength = checked(HeaderSize + payloadLength + TrailerSize);
+
+            if (totalLength > MaxCheckpointBytes)
+                throw new InvalidDataException("Checkpoint exceeds the configured format bound.");
+
+            var bytes = GC.AllocateUninitializedArray<byte>(totalLength);
+            WriteHeader(bytes, sessionId, sequence, instrumentIds.Length, payloadLength, totalLength);
+            WritePayload(bytes.AsSpan(HeaderSize, payloadLength), instrumentIds, books);
+            BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(totalLength - TrailerSize), totalLength);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(totalLength - sizeof(uint)), CommitMagic);
+
+            var crc = Crc32C.Compute(bytes.AsSpan(0, CrcOffset),
+                bytes.AsSpan(HeaderSize, payloadLength));
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(CrcOffset), crc);
+
+            Directory.CreateDirectory(directory);
             var path = Path.Combine(directory, $"{Prefix}{sequence:D20}{Suffix}");
             var temporary = path + ".tmp";
 
-            using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
-            using (var writer = new BinaryWriter(stream))
+            try
             {
-                writer.Write(Magic);
-                writer.Write(sessionId);
-                writer.Write(sequence);
-                writer.Write(books.Count);
-
-                foreach (var (instrumentId, book) in books.OrderBy(entry => entry.Key))
+                using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write,
+                           FileShare.None, bufferSize: 1, FileOptions.SequentialScan))
                 {
-                    writer.Write(instrumentId);
-                    WriteSide(writer, book, Side.Bid);
-                    WriteSide(writer, book, Side.Ask);
+                    stream.Write(bytes);
+                    stream.Flush(flushToDisk: true);
                 }
 
-                stream.Flush(flushToDisk: true);
+                File.Move(temporary, path, overwrite: true);
+
+                Span<byte> marker = stackalloc byte[sizeof(ulong)];
+                BinaryPrimitives.WriteUInt64LittleEndian(marker, sequence);
+                journal.Append(JournalRecordType.Checkpoint, sequence, DateTime.UtcNow.Ticks, marker);
+                journal.Sync();
+                return path;
             }
-
-            // Rename last, and only once the bytes are on the device. A checkpoint file that
-            // exists is therefore always complete: a crash mid-write leaves a .tmp that recovery
-            // ignores, rather than a truncated checkpoint that recovery would trust.
-            File.Move(temporary, path, overwrite: true);
-
-            Span<byte> marker = stackalloc byte[8];
-            BinaryPrimitives.WriteUInt64LittleEndian(marker, sequence);
-            journal.Append(JournalRecordType.Checkpoint, sequence, DateTime.UtcNow.Ticks, marker);
-            journal.Sync();
-
-            return path;
-        }
-
-        private static void WriteSide(BinaryWriter writer, IOrderBook book, Side side)
-        {
-            var count = book.Count(side);
-            var levels = new PriceLevel[count];
-            var copied = book.CopyTo(side, levels);
-
-            writer.Write(copied);
-
-            for (var i = 0; i < copied; i++)
+            finally
             {
-                writer.Write(levels[i].Price);
-                writer.Write(levels[i].Quantity);
+                if (File.Exists(temporary))
+                    File.Delete(temporary);
             }
         }
 
-        /// <summary>The newest checkpoint at or below <paramref name="notAfter"/>, if any.</summary>
         public static string FindLatest(string directory, ulong notAfter = ulong.MaxValue)
         {
             if (!Directory.Exists(directory))
                 return null;
 
             return Directory.GetFiles(directory, Prefix + "*" + Suffix)
-                .Select(path => (path, sequence: SequenceOf(path)))
-                .Where(entry => entry.sequence != Sequencer.None && entry.sequence <= notAfter)
+                .Select(path => (path, valid: TryGetSequence(path, out var sequence), sequence))
+                .Where(entry => entry.valid && entry.sequence <= notAfter)
                 .OrderByDescending(entry => entry.sequence)
                 .Select(entry => entry.path)
                 .FirstOrDefault();
@@ -107,75 +97,100 @@ namespace MarketData.Common.Durability
 
         public static ulong SequenceOf(string path)
         {
-            var name = Path.GetFileNameWithoutExtension(path);
-            return name.StartsWith(Prefix, StringComparison.Ordinal)
-                   && ulong.TryParse(name.AsSpan(Prefix.Length), out var sequence)
-                ? sequence
-                : Sequencer.None;
+            return TryGetSequence(path, out var sequence) ? sequence : Sequencer.None;
         }
 
-        /// <summary>Restores books from a checkpoint file.</summary>
-        /// <returns>The sequence the state is current as of.</returns>
         public static ulong Restore(string path, Func<int, IOrderBook> bookFactory,
-            IDictionary<int, IOrderBook> books)
+            IDictionary<int, IOrderBook> books, ulong expectedSessionId = 0)
         {
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            using var reader = new BinaryReader(stream);
+            ArgumentException.ThrowIfNullOrWhiteSpace(path);
+            ArgumentNullException.ThrowIfNull(bookFactory);
+            ArgumentNullException.ThrowIfNull(books);
 
-            if (reader.ReadUInt32() != Magic)
-                throw new InvalidDataException($"{path} is not a checkpoint.");
+            var info = new FileInfo(path);
+            if (info.Length < HeaderSize + TrailerSize || info.Length > MaxCheckpointBytes)
+                throw new InvalidDataException("Checkpoint length is invalid.");
 
-            reader.ReadUInt64(); // session id, retained for provenance
-            var sequence = reader.ReadUInt64();
-            var instruments = reader.ReadInt32();
+            var bytes = File.ReadAllBytes(path);
+            var span = bytes.AsSpan();
 
-            for (var i = 0; i < instruments; i++)
+            if (BinaryPrimitives.ReadUInt32LittleEndian(span) != Magic ||
+                BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(4)) != Version ||
+                BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(6)) != HeaderSize)
+                throw new InvalidDataException("Checkpoint format is unsupported.");
+
+            var sessionId = BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(8));
+            var sequence = BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(16));
+            var instrumentCount = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(24));
+            var payloadLength = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(28));
+            var totalLength = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(32));
+
+            if (sessionId == 0 || (expectedSessionId != 0 && sessionId != expectedSessionId))
+                throw new InvalidDataException("Checkpoint session does not match.");
+            if (instrumentCount < 0 || instrumentCount > MaxInstruments || payloadLength < 0 ||
+                totalLength != bytes.Length || totalLength != HeaderSize + payloadLength + TrailerSize)
+                throw new InvalidDataException("Checkpoint framing is invalid.");
+            if (BinaryPrimitives.ReadInt32LittleEndian(span.Slice(totalLength - TrailerSize)) !=
+                    totalLength ||
+                BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(totalLength - sizeof(uint))) !=
+                    CommitMagic)
+                throw new InvalidDataException("Checkpoint commit trailer is invalid.");
+
+            var storedCrc = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(CrcOffset));
+            var actualCrc = Crc32C.Compute(span.Slice(0, CrcOffset),
+                span.Slice(HeaderSize, payloadLength));
+            if (storedCrc != actualCrc)
+                throw new InvalidDataException("Checkpoint checksum failed.");
+
+            var restored = new Dictionary<int, IOrderBook>(instrumentCount);
+            var payload = span.Slice(HeaderSize, payloadLength);
+            var offset = 0;
+
+            for (var i = 0; i < instrumentCount; i++)
             {
-                var instrumentId = reader.ReadInt32();
+                EnsureRemaining(payload, offset, 12);
+                var instrumentId = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset));
+                var bidCount = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset + 4));
+                var askCount = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset + 8));
+                offset += 12;
+
+                var maxLevels = (payload.Length - offset) / 8;
+                if (instrumentId <= 0 || bidCount < 0 || askCount < 0 ||
+                    bidCount > maxLevels || askCount > maxLevels ||
+                    restored.ContainsKey(instrumentId))
+                    throw new InvalidDataException("Checkpoint instrument table is invalid.");
+
                 var book = bookFactory(instrumentId);
-                book.Clear();
+                if (book is null || !restored.TryAdd(instrumentId, book))
+                    throw new InvalidDataException("Checkpoint book factory failed.");
 
-                ReadSide(reader, book, Side.Bid);
-                ReadSide(reader, book, Side.Ask);
+                if (bidCount > book.Depth || askCount > book.Depth)
+                    throw new InvalidDataException("Checkpoint depth exceeds the target book.");
 
-                books[instrumentId] = book;
+                offset = ReadSide(payload, offset, bidCount, Side.Bid, book);
+                offset = ReadSide(payload, offset, askCount, Side.Ask, book);
             }
+
+            if (offset != payload.Length)
+                throw new InvalidDataException("Checkpoint payload has trailing data.");
+
+            books.Clear();
+            foreach (var entry in restored)
+                books.Add(entry.Key, entry.Value);
 
             return sequence;
         }
 
-        private static void ReadSide(BinaryReader reader, IOrderBook book, Side side)
-        {
-            var count = reader.ReadInt32();
-
-            for (var i = 0; i < count; i++)
-            {
-                var price = reader.ReadInt32();
-                var quantity = reader.ReadUInt32();
-                book.Upsert(side, price, quantity);
-            }
-        }
-
-        /// <summary>
-        /// Deletes checkpoints older than the newest <paramref name="keep"/>.
-        /// </summary>
-        /// <remarks>
-        /// Never deletes the newest, whatever <paramref name="keep"/> says: a directory with no
-        /// checkpoint at all is exactly the unbounded-recovery situation checkpoints exist to
-        /// prevent, and retention should not be able to cause it.
-        /// </remarks>
         public static int Prune(string directory, int keep = 3)
         {
             if (keep < 1)
-                throw new ArgumentOutOfRangeException(nameof(keep), keep, "Must keep at least one.");
-
+                throw new ArgumentOutOfRangeException(nameof(keep));
             if (!Directory.Exists(directory))
                 return 0;
 
             var ordered = Directory.GetFiles(directory, Prefix + "*" + Suffix)
                 .OrderByDescending(SequenceOf)
                 .ToList();
-
             var removed = 0;
 
             foreach (var path in ordered.Skip(keep))
@@ -185,6 +200,113 @@ namespace MarketData.Common.Durability
             }
 
             return removed;
+        }
+
+        private static int PayloadLength(int[] instrumentIds,
+            IReadOnlyDictionary<int, IOrderBook> books)
+        {
+            var length = 0;
+
+            foreach (var instrumentId in instrumentIds)
+            {
+                var book = books[instrumentId] ??
+                    throw new InvalidDataException("Checkpoint book cannot be null.");
+                length = checked(length + 12 + checked((book.Count(Side.Bid) +
+                    book.Count(Side.Ask)) * 8));
+            }
+
+            return length;
+        }
+
+        private static bool TryGetSequence(string path, out ulong sequence)
+        {
+            var name = Path.GetFileNameWithoutExtension(path);
+            sequence = Sequencer.None;
+            return name.StartsWith(Prefix, StringComparison.Ordinal) &&
+                ulong.TryParse(name.AsSpan(Prefix.Length), out sequence);
+        }
+
+        private static void WriteHeader(Span<byte> destination, ulong sessionId, ulong sequence,
+            int instruments, int payloadLength, int totalLength)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(destination, Magic);
+            BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(4), Version);
+            BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(6), HeaderSize);
+            BinaryPrimitives.WriteUInt64LittleEndian(destination.Slice(8), sessionId);
+            BinaryPrimitives.WriteUInt64LittleEndian(destination.Slice(16), sequence);
+            BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(24), instruments);
+            BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(28), payloadLength);
+            BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(32), totalLength);
+            BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(CrcOffset), 0);
+        }
+
+        private static void WritePayload(Span<byte> destination, int[] instrumentIds,
+            IReadOnlyDictionary<int, IOrderBook> books)
+        {
+            var offset = 0;
+
+            foreach (var instrumentId in instrumentIds)
+            {
+                var book = books[instrumentId];
+                var bids = new PriceLevel[book.Count(Side.Bid)];
+                var asks = new PriceLevel[book.Count(Side.Ask)];
+                var bidCount = book.CopyTo(Side.Bid, bids);
+                var askCount = book.CopyTo(Side.Ask, asks);
+
+                if (bidCount != bids.Length || askCount != asks.Length)
+                    throw new InvalidOperationException("Book changed while checkpointing.");
+
+                BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(offset), instrumentId);
+                BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(offset + 4), bidCount);
+                BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(offset + 8), askCount);
+                offset += 12;
+                offset = WriteLevels(destination, offset, bids);
+                offset = WriteLevels(destination, offset, asks);
+            }
+        }
+
+        private static int WriteLevels(Span<byte> destination, int offset, PriceLevel[] levels)
+        {
+            foreach (var level in levels)
+            {
+                if (level.Quantity == 0)
+                    throw new InvalidDataException("Checkpoint contains an empty level.");
+
+                BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(offset), level.Price);
+                BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(offset + 4), level.Quantity);
+                offset += 8;
+            }
+
+            return offset;
+        }
+
+        private static int ReadSide(ReadOnlySpan<byte> payload, int offset, int count, Side side,
+            IOrderBook book)
+        {
+            EnsureRemaining(payload, offset, checked(count * 8));
+            var previous = 0;
+
+            for (var i = 0; i < count; i++)
+            {
+                var price = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset));
+                var quantity = BinaryPrimitives.ReadUInt32LittleEndian(payload.Slice(offset + 4));
+
+                if (quantity == 0 || (i > 0 && (side == Side.Bid ? price >= previous : price <= previous)))
+                    throw new InvalidDataException("Checkpoint levels are not canonical.");
+                if (!book.Upsert(side, price, quantity))
+                    throw new InvalidDataException("Checkpoint level could not be restored.");
+
+                previous = price;
+                offset += 8;
+            }
+
+            return offset;
+        }
+
+        private static void EnsureRemaining(ReadOnlySpan<byte> payload, int offset, int required)
+        {
+            if (offset < 0 || required < 0 || offset > payload.Length - required)
+                throw new InvalidDataException("Checkpoint payload is truncated.");
         }
     }
 }

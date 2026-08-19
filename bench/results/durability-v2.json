@@ -1,0 +1,116 @@
+{
+  "TimestampUtc": "2026-08-19T19:13:32.5033642+00:00",
+  "Runtime": ".NET 8.0.30",
+  "OperatingSystem": "Ubuntu 24.04.3 LTS",
+  "Architecture": "X64",
+  "LogicalProcessors": 8,
+  "ServerGc": true,
+  "StopwatchFrequency": 1000000000,
+  "Crc32CImplementation": "SSE4.2",
+  "Records": 5000,
+  "PayloadBytes": 64,
+  "Trials": 5,
+  "Append": [
+    {
+      "Name": "OS page cache",
+      "Policy": "OsBuffered",
+      "PayloadBytes": 64,
+      "Records": 5000,
+      "SyncIntervalMilliseconds": 200,
+      "MedianSyncs": 0,
+      "MedianNanoseconds": 1097.97,
+      "MinNanoseconds": 1044.82,
+      "MaxNanoseconds": 2211.13,
+      "AppendsPerSecond": 910770,
+      "MegabytesPerSecond": 86.86,
+      "BytesAllocatedPerAppend": 0
+    },
+    {
+      "Name": "periodic 1 ms",
+      "Policy": "SyncPeriodic",
+      "PayloadBytes": 64,
+      "Records": 5000,
+      "SyncIntervalMilliseconds": 1,
+      "MedianSyncs": 2,
+      "MedianNanoseconds": 2095.61,
+      "MinNanoseconds": 1538.88,
+      "MaxNanoseconds": 6806.56,
+      "AppendsPerSecond": 477187,
+      "MegabytesPerSecond": 45.51,
+      "BytesAllocatedPerAppend": 0
+    },
+    {
+      "Name": "group commit 64",
+      "Policy": "OsBuffered",
+      "PayloadBytes": 64,
+      "Records": 5000,
+      "SyncIntervalMilliseconds": 200,
+      "MedianSyncs": 79,
+      "MedianNanoseconds": 30710.73,
+      "MinNanoseconds": 24860.06,
+      "MaxNanoseconds": 39239.33,
+      "AppendsPerSecond": 32562,
+      "MegabytesPerSecond": 3.11,
+      "BytesAllocatedPerAppend": 0
+    },
+    {
+      "Name": "fsync each",
+      "Policy": "SyncEachRecord",
+      "PayloadBytes": 64,
+      "Records": 5000,
+      "SyncIntervalMilliseconds": 200,
+      "MedianSyncs": 5000,
+      "MedianNanoseconds": 1417223.42,
+      "MinNanoseconds": 1122536.19,
+      "MaxNanoseconds": 1477936.15,
+      "AppendsPerSecond": 706,
+      "MegabytesPerSecond": 0.07,
+      "BytesAllocatedPerAppend": 0
+    },
+    {
+      "Name": "seal \u002B packet WAL",
+      "Policy": "OsBuffered",
+      "PayloadBytes": 50,
+      "Records": 5000,
+      "SyncIntervalMilliseconds": 0,
+      "MedianSyncs": 0,
+      "MedianNanoseconds": 980.14,
+      "MinNanoseconds": 826.59,
+      "MaxNanoseconds": 3048.51,
+      "AppendsPerSecond": 1020263,
+      "MegabytesPerSecond": 83.68,
+      "BytesAllocatedPerAppend": 0
+    }
+  ],
+  "Recovery": {
+    "Messages": 50000,
+    "CheckpointSequence": 47500,
+    "FullMedianMilliseconds": 23.6,
+    "FullMinMilliseconds": 22.39,
+    "FullMaxMilliseconds": 24.74,
+    "CheckpointMedianMilliseconds": 3.42,
+    "CheckpointMinMilliseconds": 3.23,
+    "CheckpointMaxMilliseconds": 3.77,
+    "SpeedUp": 6.9
+  },
+  "RangeReads": [
+    {
+      "Name": "sparse index",
+      "Queries": 100,
+      "IndexEntries": 196,
+      "MedianNanosecondsPerRequest": 84949.51,
+      "MinNanosecondsPerRequest": 78166.45,
+      "MaxNanosecondsPerRequest": 91325.05,
+      "BytesAllocatedPerRequest": 1736
+    },
+    {
+      "Name": "segment scan",
+      "Queries": 100,
+      "IndexEntries": 0,
+      "MedianNanosecondsPerRequest": 2299824.34,
+      "MinNanosecondsPerRequest": 895360.13,
+      "MaxNanosecondsPerRequest": 2635666.5,
+      "BytesAllocatedPerRequest": 5848
+    }
+  ]
+}
