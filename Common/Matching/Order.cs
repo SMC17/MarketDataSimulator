@@ -9,6 +9,12 @@ namespace MarketData.Common.Matching
 
         /// <summary>Takes liquidity at any price; never rests.</summary>
         Market = 1,
+
+        /// <summary>
+        /// Trades only at the current opposite touch, then rests any remainder at that price.
+        /// Rejected when the opposite book is empty.
+        /// </summary>
+        MarketToLimit = 2,
     }
 
     public enum TimeInForce : byte
@@ -21,6 +27,9 @@ namespace MarketData.Common.Matching
 
         /// <summary>Fill entirely and immediately, or do nothing at all.</summary>
         FillOrKill = 2,
+
+        /// <summary>Rest without taking liquidity; reject if the order would cross.</summary>
+        GoodTilCrossing = 3,
     }
 
     /// <summary>
