@@ -16,17 +16,10 @@ namespace MarketData.Common.Reference
         Correction,
     }
 
-    /// <summary>
-    /// An instrument's attributes over one half-open interval of time.
-    /// </summary>
+    /// <summary>Instrument attributes over a half-open effective interval.</summary>
     /// <param name="EffectiveFrom">Inclusive start.</param>
-    /// <param name="EffectiveTo">
-    /// Exclusive end, or <see cref="DateTime.MaxValue"/> while current.
-    /// </param>
-    /// <param name="RecordedAt">
-    /// When this fact was learned, which is not when it took effect. Both are kept; see
-    /// <see cref="InstrumentMaster"/>.
-    /// </param>
+    /// <param name="EffectiveTo">Exclusive end; <see cref="DateTime.MaxValue"/> means current.</param>
+    /// <param name="RecordedAt">System time when the fact became known.</param>
     public sealed record InstrumentRecord(
         int InstrumentId,
         string Symbol,
@@ -41,112 +34,68 @@ namespace MarketData.Common.Reference
         public bool CoversAt(DateTime instant) => instant >= EffectiveFrom && instant < EffectiveTo;
     }
 
-    /// <summary>
-    /// Effective-dated instrument reference data with point-in-time lookup.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Reference data is not a dictionary of current values, and treating it as one is the single
-    /// most common way historical analysis goes quietly wrong. A symbol that was reused, a tick
-    /// size that changed, a split that repriced everything - each means the correct answer to
-    /// "what were this instrument's attributes?" depends on <em>when you are asking about</em>. A
-    /// mutable map silently answers every historical question with today's facts.
-    /// </para>
-    /// <para>
-    /// So records are intervals, never overwritten, and lookups take an instant. Amending a fact
-    /// closes the old interval rather than editing it.
-    /// </para>
-    /// <para>
-    /// <b>Two time axes, deliberately.</b> <c>EffectiveFrom</c> is when a fact became true in the
-    /// world; <c>RecordedAt</c> is when this system learned it. They differ whenever a correction
-    /// arrives late, and keeping both is what makes it possible to reproduce a decision made with
-    /// the information available at the time - which is what an audit actually asks for. Asking
-    /// only "what was true?" is the wrong question when the dispute is about what was knowable.
-    /// </para>
-    /// </remarks>
+    /// <summary>Single-writer bitemporal instrument reference data.</summary>
     public sealed class InstrumentMaster
     {
         private readonly Dictionary<int, List<InstrumentRecord>> _byInstrument = new();
 
-        /// <summary>Adds a record, closing any open interval it supersedes.</summary>
+        /// <summary>Appends an immutable reference-data observation.</summary>
         public void Amend(InstrumentRecord record)
         {
             ArgumentNullException.ThrowIfNull(record);
 
-            if (record.EffectiveTo <= record.EffectiveFrom)
-                throw new ArgumentException("A record must cover a non-empty interval.", nameof(record));
+            if (record.InstrumentId <= 0 || string.IsNullOrWhiteSpace(record.Symbol) ||
+                record.TickSize <= 0 || record.LotSize <= 0 ||
+                string.IsNullOrWhiteSpace(record.Currency) ||
+                record.EffectiveTo <= record.EffectiveFrom || !Enum.IsDefined(record.Reason))
+                throw new ArgumentException("Instrument record is invalid.", nameof(record));
 
             if (!_byInstrument.TryGetValue(record.InstrumentId, out var history))
                 _byInstrument[record.InstrumentId] = history = new List<InstrumentRecord>();
 
-            for (var i = 0; i < history.Count; i++)
+            if (history.Any(existing => existing.RecordedAt == record.RecordedAt &&
+                                        existing.EffectiveFrom == record.EffectiveFrom))
             {
-                var existing = history[i];
-
-                // An open interval that the new record starts inside gets closed at that point,
-                // rather than replaced: the old fact was true for the time it covered, and
-                // rewriting it would destroy the ability to reproduce past decisions.
-                if (existing.EffectiveFrom < record.EffectiveFrom && existing.EffectiveTo > record.EffectiveFrom)
-                    history[i] = existing with { EffectiveTo = record.EffectiveFrom };
+                throw new InvalidOperationException(
+                    "Reference observations require a unique recorded/effective timestamp pair.");
             }
 
             history.Add(record);
-            history.Sort((left, right) => left.EffectiveFrom.CompareTo(right.EffectiveFrom));
         }
 
         /// <summary>The record in force at <paramref name="instant"/>, or null.</summary>
         public InstrumentRecord AsOf(int instrumentId, DateTime instant)
             => _byInstrument.TryGetValue(instrumentId, out var history)
-                ? history.LastOrDefault(record => record.CoversAt(instant))
+                ? Materialize(history, DateTime.MaxValue)
+                    .LastOrDefault(record => record.CoversAt(instant))
                 : null;
 
-        /// <summary>
-        /// The record in force at <paramref name="instant"/> as it was <em>known</em> at
-        /// <paramref name="asKnownAt"/>.
-        /// </summary>
-        /// <remarks>
-        /// The bitemporal query. Answers "what did we believe about this instrument at the time we
-        /// acted?", which is the question an audit or a reconciliation actually poses, and which a
-        /// single-axis lookup cannot express at all.
-        /// </remarks>
+        /// <summary>Returns effective state using only facts known by <paramref name="asKnownAt"/>.</summary>
         public InstrumentRecord AsKnownAt(int instrumentId, DateTime instant, DateTime asKnownAt)
             => _byInstrument.TryGetValue(instrumentId, out var history)
-                ? history
-                    .Where(record => record.CoversAt(instant) && record.RecordedAt <= asKnownAt)
-                    .OrderByDescending(record => record.RecordedAt)
-                    .FirstOrDefault()
+                ? Materialize(history, asKnownAt).LastOrDefault(record => record.CoversAt(instant))
                 : null;
 
-        /// <summary>
-        /// Resolves a symbol at a point in time.
-        /// </summary>
-        /// <remarks>
-        /// Deliberately not a reverse dictionary. Symbols are recycled - a ticker freed by a
-        /// delisting is reassigned to an unrelated company - so a symbol alone does not identify an
-        /// instrument, and a lookup that pretends otherwise will confidently return the wrong one.
-        /// </remarks>
+        /// <summary>Resolves every instrument holding a symbol at an effective instant.</summary>
         public IReadOnlyList<InstrumentRecord> ResolveSymbol(string symbol, DateTime instant)
-            => _byInstrument.Values
-                .SelectMany(history => history)
-                .Where(record => record.CoversAt(instant)
-                                 && string.Equals(record.Symbol, symbol, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
+            return _byInstrument.Values
+                .SelectMany(history => Materialize(history, DateTime.MaxValue))
+                .Where(record => record.CoversAt(instant) &&
+                    string.Equals(record.Symbol, symbol, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(record => record.InstrumentId)
+                .ToList().AsReadOnly();
+        }
 
         public IReadOnlyList<InstrumentRecord> History(int instrumentId)
             => _byInstrument.TryGetValue(instrumentId, out var history)
-                ? history.ToList()
+                ? Materialize(history, DateTime.MaxValue).AsReadOnly()
                 : Array.Empty<InstrumentRecord>();
 
-        public IEnumerable<int> Instruments => _byInstrument.Keys;
+        public IEnumerable<int> Instruments => _byInstrument.Keys.OrderBy(id => id);
 
-        /// <summary>
-        /// Checks that an instrument's history has no gaps or overlaps.
-        /// </summary>
-        /// <remarks>
-        /// A gap means some instant has no answer; an overlap means it has two. Both are silent
-        /// failures at lookup time - the first returns null and the second returns whichever record
-        /// happened to sort last - so the structure is validated directly instead.
-        /// </remarks>
+        /// <summary>Reports gaps and overlaps in the current effective timeline.</summary>
         public IReadOnlyList<string> Validate(int instrumentId)
         {
             var problems = new List<string>();
@@ -157,7 +106,7 @@ namespace MarketData.Common.Reference
                 return problems;
             }
 
-            var ordered = history.OrderBy(record => record.EffectiveFrom).ToList();
+            var ordered = Materialize(history, DateTime.MaxValue);
 
             for (var i = 1; i < ordered.Count; i++)
             {
@@ -178,6 +127,44 @@ namespace MarketData.Common.Reference
             }
 
             return problems;
+        }
+
+        private static List<InstrumentRecord> Materialize(List<InstrumentRecord> observations,
+            DateTime asKnownAt)
+        {
+            var timeline = new List<InstrumentRecord>(observations.Count);
+
+            foreach (var observation in observations
+                         .Where(record => record.RecordedAt <= asKnownAt)
+                         .OrderBy(record => record.RecordedAt)
+                         .ThenBy(record => record.EffectiveFrom))
+            {
+                var record = observation;
+
+                for (var i = timeline.Count - 1; i >= 0; i--)
+                {
+                    var existing = timeline[i];
+
+                    if (existing.EffectiveFrom == record.EffectiveFrom)
+                    {
+                        timeline.RemoveAt(i);
+                    }
+                    else if (existing.EffectiveFrom < record.EffectiveFrom &&
+                             existing.EffectiveTo > record.EffectiveFrom)
+                    {
+                        timeline[i] = existing with { EffectiveTo = record.EffectiveFrom };
+                    }
+                }
+
+                timeline.Add(record);
+            }
+
+            timeline.Sort((left, right) =>
+            {
+                var effective = left.EffectiveFrom.CompareTo(right.EffectiveFrom);
+                return effective != 0 ? effective : left.RecordedAt.CompareTo(right.RecordedAt);
+            });
+            return timeline;
         }
     }
 }

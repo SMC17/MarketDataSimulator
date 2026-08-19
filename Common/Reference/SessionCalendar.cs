@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -42,31 +43,11 @@ namespace MarketData.Common.Reference
         public bool CoversAt(DateTime instant) => instant >= From && instant < To;
     }
 
-    /// <summary>
-    /// When a venue trades, and what that implies about the data it emits.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The calendar is not decoration. Most of the ways market data analysis goes wrong are
-    /// calendar errors wearing a different hat: a "zero return" that was really a holiday, a
-    /// spread that looks impossibly wide because it was sampled during an auction, a book that
-    /// appears frozen because the instrument was halted. Each of those is a real number that means
-    /// something other than what it appears to mean, and only the calendar can say so.
-    /// </para>
-    /// <para>
-    /// So the state is a first-class input, and <see cref="IsContinuousTrading"/> exists to be
-    /// asked before a quote is treated as a quote.
-    /// </para>
-    /// <para>
-    /// Times of day are venue-local and holidays are venue-local dates, because that is how venues
-    /// actually define them. Converting to UTC first would need a time zone and would fold the
-    /// daylight-saving question into the calendar, where it does not belong.
-    /// </para>
-    /// </remarks>
+    /// <summary>Venue-local session state with holidays, special days, and instrument halts.</summary>
     public sealed class SessionCalendar
     {
-        private readonly List<SessionWindow> _windows;
-        private readonly HashSet<DateTime> _holidays;
+        private readonly IReadOnlyList<SessionWindow> _windows;
+        private readonly FrozenSet<DateTime> _holidays;
         private readonly Dictionary<DateTime, IReadOnlyList<SessionWindow>> _specialDays;
         private readonly List<TradingHalt> _halts = new();
 
@@ -77,25 +58,41 @@ namespace MarketData.Common.Reference
             IEnumerable<DayOfWeek> tradingDays = null,
             IDictionary<DateTime, IReadOnlyList<SessionWindow>> specialDays = null)
         {
+            ArgumentException.ThrowIfNullOrWhiteSpace(venue);
+            ArgumentNullException.ThrowIfNull(windows);
+
             Venue = venue;
-            _windows = windows.OrderBy(window => window.Start).ToList();
-            _holidays = new HashSet<DateTime>((holidays ?? Array.Empty<DateTime>()).Select(d => d.Date));
+            var suppliedWindows = windows.ToArray();
+            if (suppliedWindows.Any(window => window is null))
+                throw new ArgumentException("Session windows cannot be null.", nameof(windows));
+            var orderedWindows = suppliedWindows.OrderBy(window => window.Start).ToArray();
+            ValidateWindows(orderedWindows, nameof(windows));
+            _windows = Array.AsReadOnly(orderedWindows);
+            _holidays = (holidays ?? Array.Empty<DateTime>()).Select(date => date.Date).ToFrozenSet();
             _specialDays = specialDays is null
                 ? new Dictionary<DateTime, IReadOnlyList<SessionWindow>>()
-                : specialDays.ToDictionary(entry => entry.Key.Date, entry => entry.Value);
+                : specialDays.ToDictionary(entry => entry.Key.Date, entry =>
+                {
+                    if (entry.Value is null)
+                        throw new ArgumentException("Special-day windows cannot be null.",
+                            nameof(specialDays));
+                    var supplied = entry.Value.ToArray();
+                    if (supplied.Any(window => window is null))
+                        throw new ArgumentException("Special-day windows cannot be null.",
+                            nameof(specialDays));
+                    var copy = supplied.OrderBy(window => window.Start).ToArray();
+                    ValidateWindows(copy, nameof(specialDays));
+                    return (IReadOnlyList<SessionWindow>)Array.AsReadOnly(copy);
+                });
 
-            TradingDays = new HashSet<DayOfWeek>(tradingDays ?? new[]
+            TradingDays = (tradingDays ?? new[]
             {
                 DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday,
                 DayOfWeek.Thursday, DayOfWeek.Friday,
-            });
+            }).ToFrozenSet();
 
-            for (var i = 1; i < _windows.Count; i++)
-            {
-                if (_windows[i - 1].End > _windows[i].Start)
-                    throw new ArgumentException(
-                        $"{venue}: session windows overlap at {_windows[i].Start}.", nameof(windows));
-            }
+            if (TradingDays.Count == 0 || TradingDays.Any(day => !Enum.IsDefined(day)))
+                throw new ArgumentException("Trading days are invalid.", nameof(tradingDays));
         }
 
         public string Venue { get; }
@@ -115,7 +112,14 @@ namespace MarketData.Common.Reference
             },
             holidays);
 
-        public void AddHalt(TradingHalt halt) => _halts.Add(halt);
+        public void AddHalt(TradingHalt halt)
+        {
+            ArgumentNullException.ThrowIfNull(halt);
+            if (halt.InstrumentId <= 0 || halt.To <= halt.From ||
+                string.IsNullOrWhiteSpace(halt.Reason))
+                throw new ArgumentException("Trading halt is invalid.", nameof(halt));
+            _halts.Add(halt);
+        }
 
         public bool IsTradingDay(DateTime date)
             => TradingDays.Contains(date.DayOfWeek) && !_holidays.Contains(date.Date);
@@ -123,10 +127,6 @@ namespace MarketData.Common.Reference
         /// <summary>The venue's state for an instrument at a venue-local instant.</summary>
         public SessionState StateAt(DateTime localInstant, int instrumentId = 0)
         {
-            // A halt overrides the schedule: the clock says continuous, the venue says no.
-            if (_halts.Any(halt => halt.InstrumentId == instrumentId && halt.CoversAt(localInstant)))
-                return SessionState.Halted;
-
             if (!IsTradingDay(localInstant))
                 return SessionState.Closed;
 
@@ -136,21 +136,19 @@ namespace MarketData.Common.Reference
             foreach (var window in windows)
             {
                 if (window.Contains(timeOfDay))
-                    return window.State;
+                {
+                    return window.State != SessionState.Closed &&
+                        _halts.Any(halt => halt.InstrumentId == instrumentId &&
+                            halt.CoversAt(localInstant))
+                        ? SessionState.Halted
+                        : window.State;
+                }
             }
 
             return SessionState.Closed;
         }
 
-        /// <summary>
-        /// Whether a two-sided quote at this instant means what a quote normally means.
-        /// </summary>
-        /// <remarks>
-        /// The question worth asking before computing a spread, a mid, or a return. During an
-        /// auction the book is indicative and crossed by design; during a halt it is stale; when
-        /// closed it is empty. All three produce numbers, and all three of those numbers are
-        /// misleading.
-        /// </remarks>
+        /// <summary>Whether the venue is in continuous trading.</summary>
         public bool IsContinuousTrading(DateTime localInstant, int instrumentId = 0)
             => StateAt(localInstant, instrumentId) == SessionState.Continuous;
 
@@ -160,8 +158,6 @@ namespace MarketData.Common.Reference
             var current = StateAt(localInstant, instrumentId);
             var probe = localInstant;
 
-            // Bounded scan: a venue that does not change state within a fortnight is misconfigured,
-            // and an unbounded loop here would hang rather than say so.
             var limit = localInstant.AddDays(14);
 
             while (probe < limit)
@@ -202,6 +198,22 @@ namespace MarketData.Common.Reference
             }
 
             yield return date.AddDays(1);
+        }
+
+        private static void ValidateWindows(IReadOnlyList<SessionWindow> windows, string parameter)
+        {
+            if (windows.Count == 0)
+                throw new ArgumentException("At least one session window is required.", parameter);
+
+            for (var i = 0; i < windows.Count; i++)
+            {
+                var window = windows[i];
+                if (window is null || !Enum.IsDefined(window.State) || window.Start < TimeSpan.Zero ||
+                    window.End > TimeSpan.FromDays(1) || window.End <= window.Start)
+                    throw new ArgumentException("Session window is invalid.", parameter);
+                if (i > 0 && windows[i - 1].End > window.Start)
+                    throw new ArgumentException("Session windows overlap.", parameter);
+            }
         }
     }
 }

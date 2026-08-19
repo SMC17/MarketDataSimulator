@@ -54,6 +54,35 @@ namespace MarketData.Tests
             Assert.NotEqual(baseline, movedField.Fingerprint);
         }
 
+        [Fact]
+        public void FingerprintComponentsAreLengthDelimited()
+        {
+            var field = new[] { new SchemaField("F", FieldType.UInt8, 0, 1) };
+            var left = new Schema(1, new[] { new MessageSchema("A1", 2, field) });
+            var right = new Schema(1, new[] { new MessageSchema("A", 12, field) });
+
+            Assert.NotEqual(left.Fingerprint, right.Fingerprint);
+        }
+
+        [Fact]
+        public void SchemaConstructionTakesAnImmutableSnapshot()
+        {
+            var fields = new List<SchemaField>
+            {
+                new("A", FieldType.UInt8, 0, 1),
+            };
+            var messages = new List<MessageSchema> { new("M", 1, fields) };
+            var schema = new Schema(1, messages);
+            var fingerprint = schema.Fingerprint;
+
+            fields.Add(new SchemaField("B", FieldType.UInt8, 1, 1));
+            messages.Clear();
+
+            Assert.Single(schema.Messages);
+            Assert.Single(schema.Messages[0].Fields);
+            Assert.Equal(fingerprint, schema.Fingerprint);
+        }
+
         /// <summary>Overlapping fields are silently destructive, so they are rejected outright.</summary>
         [Fact]
         public void OverlappingFieldsAreRejected()
@@ -83,7 +112,7 @@ namespace MarketData.Tests
         // ------------------------------------------------------- compatibility rules
 
         [Fact]
-        public void AddingAnOptionalFieldPastTheEndIsBackwardCompatible()
+        public void AppendingAnOptionalFieldWithoutMessageFramingIsBreaking()
         {
             var older = new Schema(1, new[]
             {
@@ -101,9 +130,12 @@ namespace MarketData.Tests
 
             var report = Compatibility.Compare(older, newer);
 
-            Assert.Equal(CompatibilityKind.BackwardCompatible, report.Kind);
-            Assert.True(report.CanDeployIndependently);
-            Compatibility.AssertDeployableAgainst(older, newer);
+            Assert.Equal(CompatibilityKind.Breaking, report.Kind);
+            Assert.False(report.CanDeployIndependently);
+            Assert.Contains(report.Breaks,
+                item => item.Message.Contains("without a length-delimited envelope"));
+            Assert.Throws<SchemaCompatibilityException>(
+                () => Compatibility.AssertDeployableAgainst(older, newer));
         }
 
         /// <summary>
@@ -232,10 +264,18 @@ namespace MarketData.Tests
             };
         }
 
-        /// <summary>The shipped versions must actually be safe to deploy against each other.</summary>
         [Fact]
-        public void TheShippedSchemaEvolutionIsDeployable()
-            => Compatibility.AssertDeployableAgainst(FeedSchemas.V1, FeedSchemas.V2);
+        public void ANewUnframedMessageTypeRequiresAReaderFirstCutover()
+        {
+            var report = Compatibility.Compare(FeedSchemas.V1, FeedSchemas.V2);
+
+            Assert.Equal(CompatibilityKind.ForwardCompatible, report.Kind);
+            Assert.False(report.CanDeployIndependently);
+            Assert.Contains(report.Breaks,
+                item => item.Message.Contains("cannot skip unframed message types"));
+            Assert.Throws<SchemaCompatibilityException>(
+                () => Compatibility.AssertDeployableAgainst(FeedSchemas.V1, FeedSchemas.V2));
+        }
 
         // ------------------------------------------------------- registry
 
@@ -253,37 +293,62 @@ namespace MarketData.Tests
             => Assert.Throws<SchemaNegotiationException>(
                 () => SchemaRegistry.Default.Negotiate(new[] { 98, 99 }));
 
-        /// <summary>
-        /// Two builds agreeing they speak "v2" while disagreeing about what v2 is.
-        /// </summary>
-        /// <remarks>
-        /// The failure the fingerprint exists to catch, and the one a version number alone cannot:
-        /// someone edited a layout without bumping the number.
-        /// </remarks>
+        /// <summary>Equal version numbers do not override a layout mismatch.</summary>
         [Fact]
         public void SameVersionDifferentLayoutIsRejected()
         {
             var thrown = Assert.Throws<SchemaNegotiationException>(
-                () => SchemaRegistry.Default.Confirm(2, FeedSchemas.V2.Fingerprint ^ 1));
+                () => SchemaRegistry.Default.Confirm(2, FeedSchemas.V2.Fingerprint ^ (UInt128)1));
 
             Assert.Contains("different layout", thrown.Message);
             Assert.Same(FeedSchemas.V2, SchemaRegistry.Default.Confirm(2, FeedSchemas.V2.Fingerprint));
         }
 
-        /// <summary>
-        /// The declared schema must match the encoder's actual constants.
-        /// </summary>
-        /// <remarks>
-        /// A schema that has drifted from the code it describes is worse than no schema, because it
-        /// will be believed. This is the check that keeps the two honest.
-        /// </remarks>
+        /// <summary>The declared fixed layouts mirror the encoder.</summary>
         [Fact]
         public void TheDeclaredLayoutMatchesTheEncoder()
         {
-            var incremental = FeedSchemas.Current.Find(FeedSchemas.IncrementalTypeCode);
+            Assert.Equal(5, FeedSchemas.Current.Messages.Count);
+            AssertIncremental(FeedSchemas.AddTypeCode, "Add");
+            AssertIncremental(FeedSchemas.ReplaceTypeCode, "Replace");
+            AssertIncremental(FeedSchemas.RemoveTypeCode, "Remove");
+
+            var snapshot = FeedSchemas.Current.Find(FeedSchemas.SnapshotHeaderTypeCode);
+            Assert.NotNull(snapshot);
+            Assert.Equal(7, snapshot.Size);
+            Assert.Collection(snapshot.Fields.OrderBy(field => field.Offset),
+                field => Assert.Equal(("MessageType", FieldType.UInt8, 0, 1),
+                    (field.Name, field.Type, field.Offset, field.Length)),
+                field => Assert.Equal(("InstrumentId", FieldType.Int32, 1, 4),
+                    (field.Name, field.Type, field.Offset, field.Length)),
+                field => Assert.Equal(("BidLevels", FieldType.UInt8, 5, 1),
+                    (field.Name, field.Type, field.Offset, field.Length)),
+                field => Assert.Equal(("AskLevels", FieldType.UInt8, 6, 1),
+                    (field.Name, field.Type, field.Offset, field.Length)));
+
+            var heartbeat = FeedSchemas.Current.Find(FeedSchemas.HeartbeatTypeCode);
+            Assert.NotNull(heartbeat);
+            Assert.Equal(1, heartbeat.Size);
+        }
+
+        private static void AssertIncremental(byte typeCode, string name)
+        {
+            var incremental = FeedSchemas.Current.Find(typeCode);
 
             Assert.NotNull(incremental);
+            Assert.Equal(name, incremental.Name);
             Assert.Equal(FeedProtocol.IncrementalSize, incremental.Size);
+            Assert.Collection(incremental.Fields.OrderBy(field => field.Offset),
+                field => Assert.Equal(("MessageType", FieldType.UInt8, 0, 1),
+                    (field.Name, field.Type, field.Offset, field.Length)),
+                field => Assert.Equal(("InstrumentId", FieldType.Int32, 1, 4),
+                    (field.Name, field.Type, field.Offset, field.Length)),
+                field => Assert.Equal(("Price", FieldType.Int32, 5, 4),
+                    (field.Name, field.Type, field.Offset, field.Length)),
+                field => Assert.Equal(("Quantity", FieldType.UInt32, 9, 4),
+                    (field.Name, field.Type, field.Offset, field.Length)),
+                field => Assert.Equal(("Side", FieldType.UInt8, 13, 1),
+                    (field.Name, field.Type, field.Offset, field.Length)));
         }
     }
 
@@ -354,6 +419,50 @@ namespace MarketData.Tests
             Assert.Equal(5, master.AsKnownAt(1, tradeDay, new DateTime(2021, 6, 1))?.TickSize);
         }
 
+        [Fact]
+        public void AnAmendmentDoesNotRewritePriorKnowledge()
+        {
+            var master = new InstrumentMaster();
+            var effective = new DateTime(2021, 1, 1);
+            var learned = new DateTime(2021, 6, 1);
+            master.Amend(Record(1, "OLD", Y2020, DateTime.MaxValue, recorded: Y2020));
+            master.Amend(Record(1, "NEW", effective, DateTime.MaxValue,
+                ReferenceChangeReason.SymbolChange, recorded: learned));
+
+            Assert.Equal("OLD", master.AsKnownAt(1, effective.AddMonths(1),
+                learned.AddTicks(-1))?.Symbol);
+            Assert.Equal("NEW", master.AsOf(1, effective.AddMonths(1))?.Symbol);
+        }
+
+        [Fact]
+        public void EqualSystemTimesHaveDeterministicEffectiveOrdering()
+        {
+            var learned = new DateTime(2021, 6, 1);
+            var first = Record(1, "OLD", Y2020, DateTime.MaxValue, recorded: learned);
+            var second = Record(1, "NEW", new DateTime(2021, 1, 1), DateTime.MaxValue,
+                ReferenceChangeReason.SymbolChange, recorded: learned);
+            var forward = new InstrumentMaster();
+            var reverse = new InstrumentMaster();
+
+            forward.Amend(first);
+            forward.Amend(second);
+            reverse.Amend(second);
+            reverse.Amend(first);
+
+            Assert.Equal(forward.History(1), reverse.History(1));
+            Assert.Equal("NEW", reverse.AsOf(1, new DateTime(2021, 2, 1))?.Symbol);
+        }
+
+        [Fact]
+        public void AmbiguousBitemporalCoordinatesAreRejected()
+        {
+            var master = new InstrumentMaster();
+            var record = Record(1, "A", Y2020, DateTime.MaxValue, recorded: Y2020);
+            master.Amend(record);
+
+            Assert.Throws<InvalidOperationException>(() => master.Amend(record with { Symbol = "B" }));
+        }
+
         /// <summary>Symbols are recycled, so a symbol alone does not identify an instrument.</summary>
         [Fact]
         public void ARecycledSymbolResolvesToWhicheverInstrumentHeldItThen()
@@ -381,20 +490,23 @@ namespace MarketData.Tests
             withGap.Amend(Record(1, "B", new DateTime(2020, 7, 1), DateTime.MaxValue));
             Assert.Contains(withGap.Validate(1), problem => problem.Contains("nothing covers"));
 
-            // Amend closes an interval it supersedes, so an in-order load cannot produce an
-            // overlap - the later record truncates the earlier one.
             var inOrder = new InstrumentMaster();
             inOrder.Amend(Record(1, "A", Y2020, new DateTime(2020, 8, 1)));
             inOrder.Amend(Record(1, "B", new DateTime(2020, 7, 1), DateTime.MaxValue));
             Assert.Empty(inOrder.Validate(1));
 
-            // Out-of-order loading is the case that does, because Amend only closes forwards:
-            // the record already present starts later, so there is nothing to truncate. Loading a
-            // reference file in arbitrary order is ordinary, which is why Validate exists.
             var outOfOrder = new InstrumentMaster();
             outOfOrder.Amend(Record(1, "B", new DateTime(2020, 7, 1), DateTime.MaxValue));
             outOfOrder.Amend(Record(1, "A", Y2020, new DateTime(2020, 8, 1)));
-            Assert.Contains(outOfOrder.Validate(1), problem => problem.Contains("runs to"));
+            Assert.Empty(outOfOrder.Validate(1));
+
+            var retroactiveOverlap = new InstrumentMaster();
+            retroactiveOverlap.Amend(Record(1, "B", new DateTime(2020, 7, 1),
+                DateTime.MaxValue));
+            retroactiveOverlap.Amend(Record(1, "A", Y2020, new DateTime(2020, 8, 1),
+                recorded: new DateTime(2021, 1, 1)));
+            Assert.Contains(retroactiveOverlap.Validate(1),
+                problem => problem.Contains("runs to"));
 
             Assert.Contains(new InstrumentMaster().Validate(99), problem => problem.Contains("no records"));
         }
@@ -450,9 +562,7 @@ namespace MarketData.Tests
             Assert.Equal(SessionState.Continuous, calendar.StateAt(from.AddMinutes(31), instrumentId: 7));
         }
 
-        /// <summary>
-        /// The guard that stops an auction or a halt being read as a tradeable quote.
-        /// </summary>
+        /// <summary>Only continuous state produces a tradeable quote.</summary>
         [Fact]
         public void OnlyContinuousTradingCountsAsAQuote()
         {
@@ -502,5 +612,41 @@ namespace MarketData.Tests
                 new SessionWindow(SessionState.Continuous, new TimeSpan(9, 0, 0), new TimeSpan(12, 0, 0)),
                 new SessionWindow(SessionState.PostClose, new TimeSpan(11, 0, 0), new TimeSpan(14, 0, 0)),
             }));
+
+        [Fact]
+        public void InvalidWindowsAndHaltsAreRejected()
+        {
+            Assert.Throws<ArgumentException>(() => new SessionCalendar("BAD",
+                Array.Empty<SessionWindow>()));
+            Assert.Throws<ArgumentException>(() => new SessionCalendar("BAD", new[]
+            {
+                new SessionWindow(SessionState.Continuous, TimeSpan.FromHours(10),
+                    TimeSpan.FromHours(9)),
+            }));
+
+            var calendar = SessionCalendar.UsEquities();
+            Assert.Throws<ArgumentException>(() => calendar.AddHalt(new TradingHalt(0,
+                Weekday, Weekday.AddMinutes(1), "invalid")));
+        }
+
+        [Fact]
+        public void ClosedSessionsTakePrecedenceOverHalts()
+        {
+            var saturday = new DateTime(2026, 8, 22, 10, 0, 0);
+            var calendar = SessionCalendar.UsEquities();
+            calendar.AddHalt(new TradingHalt(7, saturday.AddHours(-1), saturday.AddHours(1),
+                "news pending"));
+
+            Assert.Equal(SessionState.Closed, calendar.StateAt(saturday, instrumentId: 7));
+
+            var scheduledBreak = new SessionCalendar("TEST", new[]
+            {
+                new SessionWindow(SessionState.Closed, TimeSpan.FromHours(9), TimeSpan.FromHours(11)),
+            });
+            scheduledBreak.AddHalt(new TradingHalt(7, Weekday.AddHours(9), Weekday.AddHours(11),
+                "news pending"));
+            Assert.Equal(SessionState.Closed,
+                scheduledBreak.StateAt(Weekday.AddHours(10), instrumentId: 7));
+        }
     }
 }
