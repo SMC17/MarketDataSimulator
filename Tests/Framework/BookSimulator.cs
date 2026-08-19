@@ -1,7 +1,8 @@
+using MarketData.Common.Books;
 using System;
 using System.Collections.Generic;
 
-namespace MarketData.Common.Books
+namespace MarketData.Tests.Framework
 {
     public enum MutationKind
     {
@@ -18,14 +19,18 @@ namespace MarketData.Common.Books
     }
 
     /// <summary>
-    /// Deterministic random walk of a limit order book.
+    /// Deterministic random walk over an aggregated book, used as a test fixture.
     /// </summary>
     /// <remarks>
     /// <para>
+    /// The live feed is produced by the matching engine, not by this. What this is for is
+    /// exercising the aggregated books and the feed decoder in isolation: it generates a stream of
+    /// level mutations without dragging in orders, matching or a network, so a test of loss
+    /// recovery is a test of loss recovery and nothing else.
+    /// </para>
+    /// <para>
     /// Deliberately free of I/O, timers and threads: given a seed it produces exactly the same
-    /// sequence of mutations every time. That makes the interesting properties testable without a
-    /// network - in particular that the incremental stream is a faithful description of the book,
-    /// which is the one thing a market data feed must never get wrong.
+    /// sequence of mutations every time.
     /// </para>
     /// <para>
     /// Prices are always derived from the current book, extending outwards from the tail or
