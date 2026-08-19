@@ -394,11 +394,9 @@ namespace MarketData.Tests
         [Fact]
         public void AuditEventsSurviveARestartAndKeepTheirOrder()
         {
-            var sequencer = new Sequencer();
-
             using (var journal = new WriteAheadJournal(_root, 42, DurabilityPolicy.SyncEachRecord))
             {
-                var audit = new AuditLog(journal, sequencer);
+                var audit = new AuditLog(journal);
 
                 audit.Record(AuditEventType.OrderAccepted, "A", 1);
                 audit.Record(AuditEventType.OrderRejected, "B", 2,
@@ -437,15 +435,14 @@ namespace MarketData.Tests
         [Fact]
         public void AuditAndMarketDataShareOneOrdering()
         {
-            var sequencer = new Sequencer();
-
             using (var journal = new WriteAheadJournal(_root, 42, DurabilityPolicy.OsBuffered))
             {
-                var audit = new AuditLog(journal, sequencer);
+                var audit = new AuditLog(journal);
 
-                journal.Append(JournalRecordType.Message, sequencer.Next(), 0, new byte[] { 1 });
+                // AppendNext lets the journal own sequencing, which is the contract it enforces.
+                journal.AppendNext(0, new byte[] { 1 });
                 audit.Record(AuditEventType.OrderAccepted, "A", 1);
-                journal.Append(JournalRecordType.Message, sequencer.Next(), 0, new byte[] { 2 });
+                journal.AppendNext(0, new byte[] { 2 });
             }
 
             var kinds = new List<JournalRecordType>();
@@ -468,13 +465,18 @@ namespace MarketData.Tests
         [Fact]
         public void RetentionNeverDeletesEverything()
         {
-            var segmentBytes = JournalRecord.OverheadSize + JournalRecord.MaxPayloadSize;
+            // The smallest segment the journal accepts: its header plus one maximum-sized record.
+            var segmentBytes = JournalRecord.SizeFor(16) + JournalRecord.SizeFor(JournalRecord.MaxPayloadSize);
             var payload = new byte[1024];
 
             using (var journal = new WriteAheadJournal(_root, 42, DurabilityPolicy.OsBuffered, segmentBytes))
             {
+                // Interleaved, because an audit record must point at a message that exists.
                 for (var i = 1; i <= 4_000; i++)
-                    journal.Append(JournalRecordType.Audit, (ulong)i, i, payload);
+                {
+                    journal.AppendNext(i, payload);
+                    journal.Append(JournalRecordType.Audit, journal.LastSequence, i, payload);
+                }
             }
 
             var before = Directory.GetFiles(_root, "segment-*.jrn").Length;
@@ -494,7 +496,10 @@ namespace MarketData.Tests
         public void RetentionKeepsSegmentsInsideTheWindow()
         {
             using (var journal = new WriteAheadJournal(_root, 42, DurabilityPolicy.OsBuffered))
-                journal.Append(JournalRecordType.Audit, 1, 0, new byte[] { 1 });
+            {
+                journal.AppendNext(0, new byte[] { 1 });
+                journal.Append(JournalRecordType.Audit, journal.LastSequence, 0, new byte[] { 1 });
+            }
 
             var removed = RetentionPolicy.SevenYears.Enforce(_root, DateTime.UtcNow);
 
