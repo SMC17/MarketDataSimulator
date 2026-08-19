@@ -166,6 +166,159 @@ replication elsewhere; these runs do not model switch queues, NIC rings, packet 
 The capacity run uses one line. Integration smoke tests exercise A/B publication and duplicate
 arbitration with zero sequence gaps.
 
+## Transport scaling (pre-v2 generation)
+
+The sections above measure the v2 protocol and its recovery path. They do not measure how the
+dissemination architecture scales with the *audience*, which is a separate question and the one
+this project was originally built to answer. That record is retained here.
+
+**Read this section under the artifact boundary below.** These runs predate protocol v2 and were
+recorded on a different host (4 vCPU; see the table below) from the v2 measurements (8 logical
+processors). Nothing here is comparable with a v2 number, and none of it is combined into a single
+claim with one. What it is comparable with is itself: every row below was measured on one host in
+one session, which is what makes the unicast-versus-multicast comparison meaningful.
+
+<!-- generated: environment -->
+|  |  |
+|---|---|
+| CPU | Intel(R) Xeon(R) Processor @ 2.80GHz, 4 vCPU |
+| CPU features | avx2, avx512f, avx512bw, avx512dq, avx512vl, bmi1, bmi2, popcnt |
+| Memory | 15.7 GB |
+| OS | Ubuntu 24.04.4 LTS, kernel 6.18.5-fc-v20 |
+| Runtime | .NET 8.0.30, all projects target `net8.0` |
+| Build | Release, Server GC |
+| Topology | server and load generator as separate processes on the same host |
+<!-- /generated -->
+
+### The O(N) wall
+
+TCP fan-out performs one write per subscriber per update, so a subscriber's latency is essentially
+its position in that span. Two runs matched on messages per second, differing only in how many
+subscribers the work is spread across:
+
+<!-- generated: equal-work -->
+| Subscribers | Feed rate | Fan-out | Mean latency |
+|---|---|---|---|
+| 100 | 100 upd/s | 9,490 msg/s | **1.61 ms** |
+| 1,000 | 10 upd/s | 10,100 msg/s | **18.63 ms** |
+<!-- /generated -->
+
+Identical work per second; ten times the audience costs an order of magnitude more latency, and
+neither run was CPU-starved. No amount of tuning removes an O(N) term.
+
+The full sweep, feed rate held at 100 updates/s aggregate:
+
+<!-- generated: unicast-sweep -->
+| Subscribers | Fan-out (msg/s) | Mean (ms) | p50 | p99 | p99.9 | Max | Delivered | Gen. rate | Server CPU | Host CPU | Sustained |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100 | 9,490 | **1.61** | 1.38 | 5.8 | 26.1 | 28.4 | 99.1% | 96% | 52.8% | 18.2% | yes |
+| 200 | 19,319 | **4.19** | 4.11 | 8.2 | 18.9 | 26.1 | 99.4% | 97% | 77.8% | 92.6% | yes |
+| 300 | 29,253 | **4.13** | 3.76 | 10.3 | 18.4 | 49.8 | 99.6% | 98% | 107.7% | 141.2% | yes |
+| 400 | 38,294 | **7.35** | 7.44 | 15.4 | 28.9 | 41.9 | 99.0% | 97% | 131.4% | 186.4% | yes |
+| 500 | 48,117 | **8.54** | 8.04 | 28.4 | 62.6 | 97.4 | 99.2% | 97% | 160.9% | 242.4% | yes |
+| 600 | 57,798 | **9.71** | 9.28 | 25.1 | 51.1 | 55.1 | 99.4% | 97% | 188.4% | 286.9% | yes |
+| 700 | 67,385 | **16.35** | 14.05 | 80.5 | 103.0 | 131.9 | 99.6% | 97% | 216.3% | 344.0% | yes |
+| 800 | 77,760 | **18.73** | 15.05 | 83.8 | 133.2 | 181.2 | 99.5% | 98% | 216.3% | 355.6% | yes |
+| 900 | 86,621 | **46.15** | 23.75 | 216.7 | 254.2 | 322.8 | 99.2% | 97% | 229.4% | 378.8% | yes |
+<!-- /generated -->
+
+Every point sustained, so this sweep does not contain unicast's breaking point — but the wall is
+visible in the server's own CPU, which rises from 53% to 229% of 400% while host CPU reaches 379%.
+At 900 subscribers the latency distribution has begun to come apart: p99 of 216.7 ms against a mean
+of 46.2 ms.
+
+A second sweep holds the message rate constant on a lighter feed:
+
+<!-- generated: unicast-sweep-light -->
+| Subscribers | Fan-out (msg/s) | Mean (ms) | p50 | p99 | p99.9 | Max | Delivered | Gen. rate | Server CPU | Host CPU | Sustained |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1,000 | 10,100 | **18.63** | 18.05 | 50.0 | 61.1 | 61.6 | 100.0% | 101% | 42.8% | 65.1% | yes |
+| 2,000 | 19,868 | **34.97** | 35.15 | 77.3 | 137.2 | 137.9 | 103.5% | 96% | 68.7% | 121.1% | yes |
+| 3,000 | 30,100 | **55.35** | 49.95 | 223.2 | 264.4 | 291.9 | 100.3% | 100% | 108.9% | 198.3% | yes |
+| 4,000 | 39,998 | **69.22** | 65.25 | 180.2 | 289.6 | 357.2 | 100.0% | 100% | 134.1% | 253.9% | yes |
+| 5,000 | 50,334 | **96.83** | 87.95 | 321.1 | 387.1 | 422.2 | 100.7% | 100% | 157.4% | 304.2% | yes |
+<!-- /generated -->
+
+### Multicast removes the term
+
+The publisher encodes each update once and sends a single datagram; the network performs the
+replication.
+
+<!-- generated: multicast-sweep -->
+| Subscribers | Fan-out (msg/s) | Mean (ms) | p50 | p99 | Max | Delivered | Server pkt/s | Gaps | Stale | Server CPU | Host CPU | Sustained |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100 | 9,906 | **0.31** | 0.28 | 0.9 | 6.0 | 99.4% | 99.7 | 0 | 0 | 13.8% | 12.7% | yes |
+| 250 | 24,762 | **0.54** | 0.50 | 1.3 | 23.1 | 99.5% | 99.5 | 0 | 0 | 16.5% | 16.0% | yes |
+| 500 | 49,524 | **0.85** | 0.81 | 2.1 | 5.3 | 99.4% | 99.6 | 0 | 0 | 19.0% | 15.8% | yes |
+| 1,000 | 97,499 | **1.68** | 1.63 | 4.0 | 9.6 | 98.9% | 98.6 | 0 | 0 | 25.8% | 47.4% | yes |
+| 2,000 | 199,895 | **3.22** | 2.99 | 8.5 | 24.0 | 99.6% | 100.3 | 0 | 0 | 30.9% | 166.3% | yes |
+| 4,000 | 392,451 | **11.13** | 9.95 | 35.6 | 127.9 | 99.2% | 98.9 | 0 | 0 | 49.0% | 358.7% | yes |
+| 6,000 | 594,067 | **34.39** | 23.75 | 184.7 | 470.3 | 99.9% | 99.1 | 0 | 0 | 73.2% | 372.5% | yes |
+| 8,000 | 594,357 | **744.52** | 350.45 | 10365.0 | 24032.8 | 91.2% | 81.5 | 594 | 0 | 91.6% | 373.9% | **NO** |
+<!-- /generated -->
+
+**The `Server pkt/s` column is the result.** It does not move — 98.6 to 100.3 packets per second
+from 100 subscribers to 6,000. The publisher transmits at the update rate and holds no subscriber
+table at all.
+
+8,000 is where it breaks, and it breaks the way an unreliable transport should: 594 sequence gaps,
+detected and reported by the affected subscribers rather than silently corrupting anybody's book.
+That failure is left in the table rather than trimmed off the end of it.
+
+<!-- generated: head-to-head -->
+| Subscribers | Unicast mean | Multicast mean | Improvement |
+|---|---|---|---|
+| 100 | 1.61 ms | **0.31 ms** | **5.3×** |
+| 500 | 8.54 ms | **0.85 ms** | **10.1×** |
+
+Multicast was also measured at 250, 1,000, 2,000, 4,000, 6,000, 8,000 subscribers, where unicast was not run; those points are in the multicast sweep in BENCHMARKS.md.
+<!-- /generated -->
+
+Cost per delivered message, at each transport's highest sustained point:
+
+<!-- generated: cost-per-message -->
+| Transport | Highest sustained subscribers | Messages/s | Server CPU | Server CPU per message |
+|---|---|---|---|---|
+| Unicast gRPC | 900 | 86,621 | 229.4% | **26.48 µs** |
+| Multicast | 6,000 | 594,067 | 73.2% | **1.23 µs** |
+
+Multicast delivers each message for **21× less server CPU**, to **6.7× the subscribers** at **6.9× the throughput**.
+<!-- /generated -->
+
+Note the asymmetry in that table: multicast's 6,000 is a real ceiling because 8,000 was measured
+and failed, whereas unicast's 900 is simply the top of the sweep — no unicast point failed, so its
+limit was never found and lies somewhere above 900.
+
+### Batching
+
+Batching normally trades latency for throughput. On a fan-out feed it does the opposite, because
+per-packet cost is paid once per *subscriber*: 1,000 subscribers, 1,000 updates/s aggregate,
+varying only how many messages the publisher packs into a datagram.
+
+<!-- generated: batching -->
+| Max batch | Fan-out (msg/s) | Mean (ms) | p99 | Server pkt/s | Server CPU | Host CPU |
+|---|---|---|---|---|---|---|
+| 1 | 866,035 | **3.32** | 14.3 | 890.0 | 78.1% | 377.7% |
+| 4 | 971,437 | **2.25** | 5.6 | 299.6 | 51.2% | 244.5% |
+| 16 | 972,472 | **2.18** | 5.2 | 199.9 | 46.7% | 172.3% |
+| 64 | 971,792 | **2.09** | 4.7 | 201.0 | 45.0% | 170.9% |
+<!-- /generated -->
+
+Packet rate falls 4.4×, mean latency 1.6×, p99 3.1×, host CPU 2.2× — while delivered throughput
+*rises* 12%.
+
+### Repeatability, and what a single sweep point is worth
+
+<!-- generated: repeatability -->
+| Point | Runs | Median | Min | Max | Spread |
+|---|---|---|---|---|---|
+| 4,000 subscribers, 10 upd/s | 3 | 47.18 ms | 43.25 | 60.35 | 1.40× |
+| 500 subscribers, 100 upd/s | 3 | 8.64 ms | 7.73 | 8.66 | 1.12× |
+<!-- /generated -->
+
+A 1.4× range across three runs of an identical configuration at 4,000 subscribers. Every point in
+the sweep tables above is a single run, so read them with that spread in mind.
+
 ## Market realism
 
 Exact book reconstruction does not make generated order flow realistic. Mid-price returns sampled
@@ -187,9 +340,15 @@ market model. Distribution-dependent studies use real data.
 
 ## Artifact boundary
 
-Files carrying `v2` or `protocolv2` are the current protocol/recovery record. Unsuffixed JSON retains
-the earlier full transport sweeps, microstructure study, regenerated controls, and repeatability
-runs. Results from different protocol generations are not combined into one claim.
+Files carrying `v2` or `protocolv2` are the current protocol/recovery record. Unsuffixed JSON holds
+the earlier transport sweeps, microstructure study, regenerated controls, and repeatability runs,
+presented under [Transport scaling](#transport-scaling-pre-v2-generation).
+
+The two generations were measured on different hosts and **are not combined into one claim**.
+`docgen.py` enforces this: it partitions results by generation and refuses to render if either
+generation contains results from more than one kernel instance. What that check cannot enforce is
+prose, so the rule for a reader is simple — a v2 number and a pre-v2 number never belong in the same
+sentence, and no comparison in this document crosses that line.
 
 ## Reproduce
 
@@ -214,6 +373,31 @@ python3 bench/run_multicast.py --subscribers 100 500 --rates 500 \
 
 python3 bench/docgen.py --write
 python3 bench/docgen.py --check
+```
+
+The pre-v2 transport generation was produced by the sweeps below. Re-running them re-measures that
+whole generation on the current host, which is the only correct way to refresh it — the guard will
+reject a partial refresh that mixes hosts within one generation.
+
+```bash
+python3 bench/environment.py
+
+python3 bench/run.py --tag scale50 --rates 50 --subscribers 100 200 300 400 500 600 700 800 900
+python3 bench/run.py --tag scale5  --rates 5  --subscribers 1000 2000 3000 4000 5000
+
+python3 bench/run_multicast.py --tag mcast --rates 50 \
+  --subscribers 100 250 500 1000 2000 4000 6000 8000
+
+for b in 1 4 16 64; do
+  python3 bench/run_multicast.py --tag batch$b --max-batch $b --flush-interval-ms 1 \
+    --rates 500 --subscribers 1000
+done
+
+for i in 1 2 3; do
+  python3 bench/run.py --tag qchannel$i --rates 50 --subscribers 500
+  python3 bench/run.py --tag qring$i --ring --rates 50 --subscribers 500
+  python3 bench/run.py --tag rep$i --rates 5 --subscribers 4000
+done
 ```
 
 A serious capacity study should reserve hosts, pin processes and interrupts, record frequency and
