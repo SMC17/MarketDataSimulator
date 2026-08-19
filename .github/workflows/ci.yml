@@ -39,6 +39,9 @@ jobs:
       - name: Protocol benchmark (smoke)
         run: dotnet run --project Bench/Bench.csproj -c Release --no-build -- protocol --iterations 10000 --trials 3
 
+      - name: Durability benchmark (smoke)
+        run: dotnet run --project Bench/Bench.csproj -c Release --no-build -- durability --records 100 --payload 64 --trials 3 --range-queries 10
+
       - name: Feed smoke test
         run: ./scripts/smoke.sh
 

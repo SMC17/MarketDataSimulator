@@ -1,6 +1,9 @@
 using System;
+using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace MarketData.Common.Governance
@@ -20,15 +23,12 @@ namespace MarketData.Common.Governance
     }
 
     /// <summary>One field in a versioned message layout.</summary>
-    /// <param name="Name">Stable identity. Renaming a field is a breaking change; see below.</param>
+    /// <param name="Name">Stable field identity.</param>
     /// <param name="Type">Wire type.</param>
     /// <param name="Offset">Byte offset from the start of the message body.</param>
     /// <param name="Length">Bytes occupied. Fixed by <paramref name="Type"/> except for ASCII.</param>
     /// <param name="Since">Schema version that introduced the field.</param>
-    /// <param name="Required">
-    /// Whether a reader must understand the field. A required field added to an existing message is
-    /// a breaking change; an optional one is not.
-    /// </param>
+    /// <param name="Required">Whether readers require the field.</param>
     public sealed record SchemaField(
         string Name,
         FieldType Type,
@@ -49,91 +49,104 @@ namespace MarketData.Common.Governance
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, null),
         };
 
-        public int End => Offset + Length;
+        public int End => checked(Offset + Length);
     }
 
     /// <summary>The layout of one message type at one schema version.</summary>
     public sealed record MessageSchema(string Name, byte TypeCode, IReadOnlyList<SchemaField> Fields)
     {
         /// <summary>Bytes the message occupies, taken from the furthest field.</summary>
-        public int Size => Fields.Count == 0 ? 0 : Fields.Max(field => field.End);
+        public int Size => Fields.Count == 0 ? 0 : Fields.Max(schemaField => schemaField.End);
 
         /// <summary>Fields a reader at <paramref name="version"/> is expected to know.</summary>
         public IEnumerable<SchemaField> FieldsAsOf(int version)
             => Fields.Where(field => field.Since <= version);
     }
 
-    /// <summary>
-    /// A complete, versioned wire contract.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The point of writing the layout down as data rather than leaving it implicit in encoder and
-    /// decoder source is that compatibility becomes a property that can be <em>checked</em> instead
-    /// of a claim someone makes in a pull request. Two schema versions can be diffed mechanically,
-    /// and the rules below decide whether the change is safe.
-    /// </para>
-    /// <para>
-    /// The identity carried on the wire is <see cref="Fingerprint"/>, not the version number.
-    /// Version numbers are administrative and can be bumped without changing anything, or - far
-    /// worse - changed without being bumped. A fingerprint over the actual layout cannot be wrong
-    /// about what the sender is sending.
-    /// </para>
-    /// </remarks>
+    /// <summary>Immutable versioned wire layout with a deterministic fingerprint.</summary>
     public sealed class Schema
     {
         public Schema(int version, IReadOnlyList<MessageSchema> messages)
         {
             if (version < 1)
                 throw new ArgumentOutOfRangeException(nameof(version), version, "Versions start at 1.");
+            ArgumentNullException.ThrowIfNull(messages);
+            if (messages.Count == 0)
+                throw new ArgumentException("A schema needs at least one message.", nameof(messages));
 
             Version = version;
-            Messages = messages;
+            var copy = new MessageSchema[messages.Count];
 
-            var duplicateCodes = messages.GroupBy(m => m.TypeCode).FirstOrDefault(g => g.Count() > 1);
+            for (var i = 0; i < messages.Count; i++)
+            {
+                var message = messages[i] ??
+                    throw new ArgumentException("Message entries cannot be null.", nameof(messages));
+                if (message.Fields is null)
+                    throw new ArgumentException($"{message.Name} has no field collection.", nameof(messages));
+
+                copy[i] = new MessageSchema(message.Name, message.TypeCode,
+                    Array.AsReadOnly(message.Fields.ToArray()));
+            }
+
+            Messages = Array.AsReadOnly(copy);
+
+            var duplicateCodes = Messages.GroupBy(m => m.TypeCode).FirstOrDefault(g => g.Count() > 1);
             if (duplicateCodes is not null)
                 throw new ArgumentException($"Type code {duplicateCodes.Key} is used by more than one message.",
                     nameof(messages));
+            if (Messages.Select(message => message.Name).Distinct(StringComparer.Ordinal).Count() !=
+                Messages.Count)
+                throw new ArgumentException("Message names must be unique.", nameof(messages));
 
-            foreach (var message in messages)
-                Validate(message);
+            foreach (var message in Messages)
+                Validate(message, version);
 
-            Fingerprint = ComputeFingerprint(messages);
+            Fingerprint = ComputeFingerprint(Messages);
         }
 
         public int Version { get; }
         public IReadOnlyList<MessageSchema> Messages { get; }
 
-        /// <summary>
-        /// A stable hash of the layout itself, carried on the wire and compared at session start.
-        /// </summary>
-        public ulong Fingerprint { get; }
+        /// <summary>Stable layout identity for compatibility and session negotiation.</summary>
+        public UInt128 Fingerprint { get; }
 
         public MessageSchema Find(byte typeCode)
             => Messages.FirstOrDefault(message => message.TypeCode == typeCode);
 
-        /// <summary>
-        /// Rejects layouts that are internally impossible, before anything encodes against them.
-        /// </summary>
-        /// <remarks>
-        /// Overlapping fields are the interesting case. They are trivially easy to introduce by
-        /// hand-editing an offset and essentially undetectable afterwards: the encoder writes both
-        /// fields, the second silently truncates the first, and the corruption looks like bad data
-        /// rather than a bad schema.
-        /// </remarks>
-        private static void Validate(MessageSchema message)
+        private static void Validate(MessageSchema message, int version)
         {
+            if (string.IsNullOrWhiteSpace(message.Name) || message.TypeCode == 0 ||
+                message.Fields.Count == 0)
+                throw new ArgumentException("Messages require a name, type code, and fields.");
+            if (message.Fields.Any(field => field is null))
+                throw new ArgumentException($"{message.Name} contains a null field.");
+
             var ordered = message.Fields.OrderBy(field => field.Offset).ToList();
 
             for (var i = 0; i < ordered.Count; i++)
             {
                 var field = ordered[i];
 
+                if (string.IsNullOrWhiteSpace(field.Name))
+                    throw new ArgumentException($"{message.Name} contains an unnamed field.");
+
                 if (field.Offset < 0)
                     throw new ArgumentException($"{message.Name}.{field.Name} has a negative offset.");
 
                 if (field.Length <= 0)
                     throw new ArgumentException($"{message.Name}.{field.Name} has a non-positive length.");
+
+                if (field.Since < 1 || field.Since > version)
+                    throw new ArgumentException($"{message.Name}.{field.Name} has an invalid version.");
+
+                if (!Enum.IsDefined(field.Type))
+                    throw new ArgumentException($"{message.Name}.{field.Name} has an invalid type.");
+
+                try { _ = field.End; }
+                catch (OverflowException)
+                {
+                    throw new ArgumentException($"{message.Name}.{field.Name} exceeds the layout bound.");
+                }
 
                 if (field.Type != FieldType.Ascii && field.Length != SchemaField.WidthOf(field.Type))
                     throw new ArgumentException(
@@ -145,47 +158,58 @@ namespace MarketData.Common.Governance
                         $"{ordered[i - 1].Name} which ends at {ordered[i - 1].End}.");
             }
 
-            if (message.Fields.Select(field => field.Name).Distinct().Count() != message.Fields.Count)
+            if (message.Fields.Select(field => field.Name).Distinct(StringComparer.Ordinal).Count() !=
+                message.Fields.Count)
                 throw new ArgumentException($"{message.Name} has duplicate field names.");
         }
 
-        /// <summary>
-        /// FNV-1a over the layout. Deterministic across runs and processes, which a managed
-        /// string hash is explicitly not.
-        /// </summary>
-        private static ulong ComputeFingerprint(IReadOnlyList<MessageSchema> messages)
+        /// <summary>Truncated SHA-256 over a length-delimited binary canonical form.</summary>
+        private static UInt128 ComputeFingerprint(IReadOnlyList<MessageSchema> messages)
         {
-            const ulong offsetBasis = 14695981039346656037;
-            const ulong prime = 1099511628211;
+            var canonical = new ArrayBufferWriter<byte>();
 
-            var hash = offsetBasis;
-
-            void Mix(string text)
+            void WriteByte(byte value)
             {
-                foreach (var b in Encoding.UTF8.GetBytes(text))
-                {
-                    hash ^= b;
-                    hash *= prime;
-                }
+                canonical.GetSpan(1)[0] = value;
+                canonical.Advance(1);
             }
 
-            // Ordered so the fingerprint depends on the layout and not on declaration order.
+            void WriteInt32(int value)
+            {
+                BinaryPrimitives.WriteInt32LittleEndian(canonical.GetSpan(sizeof(int)), value);
+                canonical.Advance(sizeof(int));
+            }
+
+            void WriteString(string text)
+            {
+                var length = Encoding.UTF8.GetByteCount(text);
+                WriteInt32(length);
+                Encoding.UTF8.GetBytes(text, canonical.GetSpan(length));
+                canonical.Advance(length);
+            }
+
+            WriteInt32(messages.Count);
+
             foreach (var message in messages.OrderBy(m => m.TypeCode))
             {
-                Mix(message.Name);
-                Mix(message.TypeCode.ToString());
+                WriteString(message.Name);
+                WriteByte(message.TypeCode);
+                WriteInt32(message.Fields.Count);
 
                 foreach (var field in message.Fields.OrderBy(f => f.Offset))
                 {
-                    Mix(field.Name);
-                    Mix(((byte)field.Type).ToString());
-                    Mix(field.Offset.ToString());
-                    Mix(field.Length.ToString());
-                    Mix(field.Required ? "R" : "O");
+                    WriteString(field.Name);
+                    WriteByte((byte)field.Type);
+                    WriteInt32(field.Offset);
+                    WriteInt32(field.Length);
+                    WriteInt32(field.Since);
+                    WriteByte(field.Required ? (byte)1 : (byte)0);
                 }
             }
 
-            return hash;
+            Span<byte> digest = stackalloc byte[SHA256.HashSizeInBytes];
+            SHA256.HashData(canonical.WrittenSpan, digest);
+            return BinaryPrimitives.ReadUInt128LittleEndian(digest);
         }
     }
 }

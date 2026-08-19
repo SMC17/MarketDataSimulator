@@ -5,38 +5,30 @@ using System.Diagnostics;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
+using MarketData.Common.Durability;
 
 namespace MarketData.Common.Server
 {
-    /// <summary>
-    /// Disseminates the feed over multicast instead of per-subscriber unicast streams.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Structurally the whole point: <see cref="OnOrderbookUpdateAsync"/> performs one encode and
-    /// at most one <c>send</c>, and contains no reference to subscribers at all. The unicast
-    /// implementation it replaces walks the subscriber table on every update, so its per-update
-    /// cost - and the latency spread across that population - grows with the number of listeners.
-    /// Here the server genuinely does not know how many there are.
-    /// </para>
-    /// <para>
-    /// Because there is no per-subscriber state, there is also no per-subscriber queue, no slow
-    /// consumer to detect and no backpressure to apply. A subscriber that falls behind loses
-    /// packets and is responsible for noticing; the periodic snapshot below is what lets it
-    /// recover.
-    /// </para>
-    /// </remarks>
+    /// <summary>Subscriber-independent multicast dissemination with optional durable gap fill.</summary>
     public sealed class MulticastOrderbookService : IOrderbookService
     {
         public MulticastOrderbookService(IPAddress group, int port, IPAddress @interface,
             int maxBatch, TimeSpan flushInterval, TimeSpan snapshotInterval, IOrderbookManager manager,
-            IPAddress redundantGroup = null, int redundantPort = 0)
+            IPAddress redundantGroup = null, int redundantPort = 0,
+            WriteAheadJournal journal = null, int retransmissionPort = 0)
         {
             _publisher = new MulticastPublisher(group, port, @interface, maxBatch,
-                redundantGroup, redundantPort);
+                redundantGroup, redundantPort, journal?.SessionId ?? 0, journal);
             _flushInterval = flushInterval;
             _snapshotInterval = snapshotInterval;
             _manager = manager;
+            _journal = journal;
+
+            if (retransmissionPort != 0 && journal is null)
+                throw new ArgumentException("Retransmission requires a journal.", nameof(retransmissionPort));
+            if (journal is not null && retransmissionPort > 0)
+                _retransmission = new RetransmissionService(journalDirectory: JournalDirectory(journal),
+                    port: retransmissionPort, address: @interface);
         }
 
         public Task StartAsync()
@@ -44,6 +36,7 @@ namespace MarketData.Common.Server
             if (_pump is not null)
                 return Task.CompletedTask;
 
+            _retransmission?.Start();
             _pump = PumpAsync(_shutdown.Token);
             return Task.CompletedTask;
         }
@@ -63,8 +56,7 @@ namespace MarketData.Common.Server
                     new PriceLevel(incremental.Level.Price, incremental.Level.Quantity));
             }
 
-            // With batching disabled the packet leaves immediately, which is the configuration the
-            // latency comparison against unicast is run in.
+            // Zero flush interval disables batching latency.
             if (_flushInterval <= TimeSpan.Zero)
                 _publisher.Flush();
 
@@ -95,15 +87,7 @@ namespace MarketData.Common.Server
             return buffer;
         }
 
-        /// <summary>
-        /// Flushes partial batches on a deadline and republishes full books periodically.
-        /// </summary>
-        /// <remarks>
-        /// The recurring snapshot is the entire recovery story on an unreliable transport. A
-        /// subscriber that detects a gap has no way to request a retransmission, so its only route
-        /// back to a correct book is to wait for the next complete one; the interval therefore
-        /// bounds how long a gapped subscriber stays dark.
-        /// </remarks>
+        /// <summary>Flushes partial batches and republishes recovery snapshots.</summary>
         private async Task PumpAsync(CancellationToken token)
         {
             var lastSnapshot = Stopwatch.GetTimestamp();
@@ -168,7 +152,7 @@ namespace MarketData.Common.Server
                 DisseminatedUpdates: _publisher.MessagesSent,
                 SentMessages: _publisher.PacketsSent,
                 DroppedUpdates: 0,
-                FailedSends: _publisher.SendFailures,
+                FailedSends: _publisher.SendFailures + _publisher.JournalFailures,
                 OutboundQueued: 0,
                 MaxOutboundQueued: 0);
 
@@ -189,9 +173,21 @@ namespace MarketData.Common.Server
                 // Shutting down; the pump's cancellation is expected.
             }
 
-            _publisher.Dispose();
-            _shutdown.Dispose();
+            _retransmission?.Dispose();
+
+            try
+            {
+                _publisher.Dispose();
+            }
+            finally
+            {
+                _journal?.Dispose();
+                _shutdown.Dispose();
+            }
         }
+
+        private static string JournalDirectory(WriteAheadJournal journal)
+            => journal.DirectoryPath;
 
         private static FeedMessageType ToMessageType(OrderbookUpdateType type) => type switch
         {
@@ -205,6 +201,8 @@ namespace MarketData.Common.Server
         private readonly TimeSpan _flushInterval;
         private readonly TimeSpan _snapshotInterval;
         private readonly IOrderbookManager _manager;
+        private readonly WriteAheadJournal _journal;
+        private readonly RetransmissionService _retransmission;
         private readonly CancellationTokenSource _shutdown = new CancellationTokenSource();
         private PriceLevel[] _bidScratch = new PriceLevel[64];
         private PriceLevel[] _askScratch = new PriceLevel[64];

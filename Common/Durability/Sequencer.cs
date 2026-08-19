@@ -3,74 +3,60 @@ using System.Threading;
 
 namespace MarketData.Common.Durability
 {
-    /// <summary>
-    /// Assigns the single global order that every downstream consumer agrees on.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The sequence number is the contract. A subscriber detects loss because numbers skip, a
-    /// backup takes over at a known point because the number is durable, and a retransmission
-    /// request is expressible at all because ranges are named by it. Everything else in this
-    /// namespace exists to keep that number meaningful.
-    /// </para>
-    /// <para>
-    /// Sequences start at 1, so 0 is available as "nothing yet" without a nullable and without a
-    /// sentinel that could collide with a real value.
-    /// </para>
-    /// </remarks>
+    /// <summary>Lock-free monotonic sequence allocator. Sequence zero is the empty watermark.</summary>
     public sealed class Sequencer
     {
-        /// <summary>The value meaning "no sequence has been assigned".</summary>
         public const ulong None = 0;
 
-        private long _last;
+        // Interlocked has signed overloads; the bits remain an unsigned counter.
+        private long _lastBits;
 
-        public Sequencer(ulong resumeFrom = None) => _last = (long)resumeFrom;
+        public Sequencer(ulong resumeFrom = None) => _lastBits = unchecked((long)resumeFrom);
 
-        /// <summary>The most recently assigned sequence, or <see cref="None"/>.</summary>
-        public ulong Last => (ulong)Interlocked.Read(ref _last);
+        public ulong Last => unchecked((ulong)Interlocked.Read(ref _lastBits));
 
-        /// <summary>Assigns the next sequence.</summary>
-        /// <remarks>
-        /// Interlocked rather than a plain increment because the sequencer is the one component
-        /// several producers legitimately share - unlike the ring buffers downstream of it, which
-        /// are single-producer by construction.
-        /// </remarks>
-        public ulong Next() => (ulong)Interlocked.Increment(ref _last);
+        public ulong Next() => Reserve(1);
 
-        /// <summary>
-        /// Reserves <paramref name="count"/> consecutive sequences and returns the first.
-        /// </summary>
-        /// <remarks>
-        /// A batch published in one packet must occupy a contiguous range, or a subscriber that
-        /// receives the packet would see a gap that never existed.
-        /// </remarks>
+        /// <summary>Reserves a contiguous range and returns its first sequence.</summary>
         public ulong Reserve(int count)
         {
             if (count <= 0)
                 throw new ArgumentOutOfRangeException(nameof(count), count, "Must reserve at least one.");
 
-            var last = Interlocked.Add(ref _last, count);
-            return (ulong)last - (ulong)count + 1;
+            while (true)
+            {
+                var observedBits = Interlocked.Read(ref _lastBits);
+                var observed = unchecked((ulong)observedBits);
+
+                if (observed > ulong.MaxValue - (uint)count)
+                    throw new OverflowException("The sequence space is exhausted.");
+
+                var next = observed + (uint)count;
+                var nextBits = unchecked((long)next);
+
+                if (Interlocked.CompareExchange(ref _lastBits, nextBits, observedBits) == observedBits)
+                    return observed + 1;
+            }
         }
 
-        /// <summary>
-        /// Resumes from a recovered watermark, refusing to move backwards.
-        /// </summary>
-        /// <remarks>
-        /// Rewinding a sequencer re-issues numbers that subscribers have already seen and applied,
-        /// which is indistinguishable to them from a stuck feed and corrupts every book downstream.
-        /// It is rejected rather than clamped so the caller finds out.
-        /// </remarks>
+        /// <summary>Advances to a recovered watermark; rewinds fail.</summary>
         public void ResumeFrom(ulong sequence)
         {
-            var current = Last;
+            while (true)
+            {
+                var observedBits = Interlocked.Read(ref _lastBits);
+                var observed = unchecked((ulong)observedBits);
 
-            if (sequence < current)
-                throw new ArgumentOutOfRangeException(nameof(sequence), sequence,
-                    $"Refusing to rewind the sequencer from {current}; numbers would be reissued.");
+                if (sequence < observed)
+                    throw new ArgumentOutOfRangeException(nameof(sequence), sequence,
+                        $"Cannot rewind from {observed}.");
+                if (sequence == observed)
+                    return;
 
-            Interlocked.Exchange(ref _last, (long)sequence);
+                if (Interlocked.CompareExchange(ref _lastBits, unchecked((long)sequence), observedBits) ==
+                    observedBits)
+                    return;
+            }
         }
     }
 }
