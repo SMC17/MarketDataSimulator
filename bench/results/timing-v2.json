@@ -1,0 +1,25 @@
+[
+  {
+    "Kind": "clock",
+    "StopwatchFrequency": 1000000000,
+    "IsHighResolution": true,
+    "ResolutionNanoseconds": 20,
+    "ReadCostNanoseconds": 20.8,
+    "Source": "SoftwareMonotonic",
+    "PtpAvailable": false,
+    "HardwareTimestampsAvailable": false
+  },
+  {
+    "Kind": "placement",
+    "LogicalProcessors": 4,
+    "AllowedProcessors": 4,
+    "NumaNodes": 1,
+    "CanPinThreads": true,
+    "MigrationsWhileUnpinnedIn2s": 0,
+    "UnpinnedNanosecondsPerOp": 0.79,
+    "PinnedNanosecondsPerOp": 0.77,
+    "PercentChangeFromPinning": -2.4,
+    "Verdict": "not justified: the unpinned thread never migrated, so pinning removes a cost that was not being paid",
+    "KernelBypassEvaluated": false
+  }
+]
