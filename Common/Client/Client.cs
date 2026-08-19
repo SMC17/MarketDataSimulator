@@ -17,14 +17,14 @@ namespace MarketData.Common.Client
             _streamingTask = StreamAsync(this, _subscriptionChannel.Reader, _shutdownSource);
         }
 
-        private static async Task StreamAsync(Client client, 
-            ChannelReader<(bool Subscribe, int InstrumentId)> reader, 
+        private static async Task StreamAsync(Client client,
+            ChannelReader<(bool Subscribe, int InstrumentId)> reader,
             TaskCompletionSource shutdownSource)
         {
             using (var streaming = client.StreamOrderbookUpdates())
             {
                 _ = HandleResponsesAsync(streaming.ResponseStream, shutdownSource);
-                
+
                 while (true)
                 {
 

@@ -6,63 +6,44 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Threading;
+using MarketData.Common.Durability;
 
 namespace MarketData.Common.Feed
 {
-    /// <summary>
-    /// Publishes the feed as sequenced multicast datagrams.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The point of the whole exercise: publishing costs one <c>send</c> regardless of how many
-    /// subscribers are listening. The unicast path this replaces performs one write per
-    /// subscriber per update, so its cost - and the latency spread across the subscriber
-    /// population - grows linearly with the audience. Here the network performs the replication,
-    /// and the server does not know or care how many receivers exist.
-    /// </para>
-    /// <para>
-    /// That property is bought with reliability. UDP multicast has no retransmission and no
-    /// backpressure: a subscriber that cannot keep up simply loses packets, and the publisher
-    /// never finds out. What makes this workable is the sequence number on every packet, which
-    /// turns silent loss into detectable loss, plus a periodic snapshot that gives a subscriber
-    /// which has detected a gap a way back to a known-good state.
-    /// </para>
-    /// <para>
-    /// Messages are batched into a packet up to the fragmentation threshold, which amortises the
-    /// per-datagram cost - syscall, IP and UDP headers - over many updates. Batching trades a
-    /// little latency for a lot of throughput, so the batch is also flushed on a deadline rather
-    /// than only when full.
-    /// </para>
-    /// </remarks>
+    /// <summary>Publishes sealed, journal-first feed packets over one or two multicast lines.</summary>
     public sealed class MulticastPublisher : IDisposable
     {
-        public ulong Sequence => (ulong)Interlocked.Read(ref _sequence);
+        public ulong Sequence { get { lock (_lock) return _sequence; } }
         public ulong SessionId { get; }
         public long PacketsSent => Interlocked.Read(ref _packetsSent);
         public long MessagesSent => Interlocked.Read(ref _messagesSent);
         public long BytesSent => Interlocked.Read(ref _bytesSent);
         public long SendFailures => Interlocked.Read(ref _sendFailures);
+        public long JournalFailures => Interlocked.Read(ref _journalFailures);
 
-        /// <param name="redundantGroup">
-        /// Optional second group carrying an identical copy of the feed. Real exchanges publish an
-        /// A and a B line over disjoint paths so that a drop on one is covered by the other;
-        /// subscribers take whichever copy arrives first. It costs one extra send per packet -
-        /// still independent of the subscriber count - and roughly squares the probability that a
-        /// given packet is lost to every subscriber.
-        /// </param>
+        /// <param name="redundantGroup">Optional B line carrying the identical sealed packet.</param>
         public MulticastPublisher(IPAddress group, int port, IPAddress @interface = null, int maxBatch = 64,
-            IPAddress redundantGroup = null, int redundantPort = 0, ulong sessionId = 0)
+            IPAddress redundantGroup = null, int redundantPort = 0, ulong sessionId = 0,
+            WriteAheadJournal journal = null)
         {
             ArgumentNullException.ThrowIfNull(group);
             if ((uint)(port - 1) >= 65535)
                 throw new ArgumentOutOfRangeException(nameof(port));
+            if (maxBatch is < 1 or > ushort.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(maxBatch));
 
             _endpoint = new IPEndPoint(group, port);
             _redundantEndpoint = redundantGroup is null
                 ? null
                 : new IPEndPoint(redundantGroup, redundantPort > 0 ? redundantPort : port);
-            _maxBatch = Math.Max(1, maxBatch);
-            SessionId = sessionId == 0 ? CreateSessionId() : sessionId;
+            _maxBatch = maxBatch;
+            SessionId = sessionId == 0 ? NewSessionId() : sessionId;
+
+            if (journal is not null && journal.SessionId != SessionId)
+                throw new ArgumentException("Publisher and journal sessions differ.", nameof(journal));
+
+            _journal = journal;
+            _sequence = journal?.NextSequence ?? 0;
 
             _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             _socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastTimeToLive, 1);
@@ -77,7 +58,7 @@ namespace MarketData.Common.Feed
             }
         }
 
-        private static ulong CreateSessionId()
+        public static ulong NewSessionId()
         {
             Span<byte> bytes = stackalloc byte[sizeof(ulong)];
 
@@ -95,6 +76,8 @@ namespace MarketData.Common.Feed
         {
             lock (_lock)
             {
+                ThrowIfFaulted();
+
                 if (_pending == _maxBatch || _offset + FeedProtocol.IncrementalSize > FeedProtocol.MaxPacketSize)
                     FlushLocked();
 
@@ -109,6 +92,8 @@ namespace MarketData.Common.Feed
 
             lock (_lock)
             {
+                ThrowIfFaulted();
+
                 if (_pending == _maxBatch || _offset + size > FeedProtocol.MaxPacketSize)
                     FlushLocked();
 
@@ -120,7 +105,10 @@ namespace MarketData.Common.Feed
         public void Flush()
         {
             lock (_lock)
+            {
+                ThrowIfFaulted();
                 FlushLocked();
+            }
         }
 
         private void FlushLocked()
@@ -128,26 +116,47 @@ namespace MarketData.Common.Feed
             if (_pending == 0)
                 return;
 
-            // Stamped at the moment of transmission rather than of generation, because everything
-            // before this point is measured separately and a subscriber can only observe from here.
+            // Timestamp the sealed packet at the publication boundary.
             FeedProtocol.WriteHeader(_buffer.AsSpan(0, _offset), (ushort)_pending, SessionId,
-                (ulong)_sequence, Stopwatch.GetTimestamp());
+                _sequence, Stopwatch.GetTimestamp());
 
-            var successfulSends = TrySend(_endpoint) ? 1 : 0;
+            if (_journal is not null)
+            {
+                try
+                {
+                    _journal.AppendPacket(_buffer.AsSpan(0, _offset));
+                }
+                catch
+                {
+                    _faulted = true;
+                    Interlocked.Increment(ref _journalFailures);
+                    throw;
+                }
+            }
 
-            if (_redundantEndpoint is not null && TrySend(_redundantEndpoint))
-                successfulSends++;
+            var successfulSends = 0;
 
-            // Sequence advances even when every send fails so downstream loss is detectable.
-            Interlocked.Add(ref _sequence, _pending);
-            Interlocked.Add(ref _packetsSent, successfulSends);
-            Interlocked.Add(ref _bytesSent, (long)_offset * successfulSends);
+            try
+            {
+                if (TrySend(_endpoint))
+                    successfulSends++;
 
-            if (successfulSends > 0)
-                Interlocked.Add(ref _messagesSent, _pending);
+                if (_redundantEndpoint is not null && TrySend(_redundantEndpoint))
+                    successfulSends++;
+            }
+            finally
+            {
+                // A journalled or partially sent packet cannot reuse its sequence.
+                _sequence = checked(_sequence + (uint)_pending);
+                Interlocked.Add(ref _packetsSent, successfulSends);
+                Interlocked.Add(ref _bytesSent, (long)_offset * successfulSends);
 
-            _pending = 0;
-            _offset = FeedProtocol.HeaderSize;
+                if (successfulSends > 0)
+                    Interlocked.Add(ref _messagesSent, _pending);
+
+                _pending = 0;
+                _offset = FeedProtocol.HeaderSize;
+            }
         }
 
         private bool TrySend(EndPoint endpoint)
@@ -168,23 +177,39 @@ namespace MarketData.Common.Feed
         {
             lock (_lock)
             {
-                FlushLocked();
-                _socket.Dispose();
+                try
+                {
+                    if (!_faulted)
+                        FlushLocked();
+                }
+                finally
+                {
+                    _socket.Dispose();
+                }
             }
+        }
+
+        private void ThrowIfFaulted()
+        {
+            if (_faulted)
+                throw new InvalidOperationException("Publisher is fail-stopped after a journal error.");
         }
 
         private readonly IPEndPoint _endpoint;
         private readonly IPEndPoint _redundantEndpoint;
         private readonly Socket _socket;
+        private readonly WriteAheadJournal _journal;
         private readonly int _maxBatch;
         private readonly object _lock = new object();
         private readonly byte[] _buffer = new byte[FeedProtocol.MaxPacketSize];
         private int _offset = FeedProtocol.HeaderSize;
         private int _pending;
-        private long _sequence;
+        private ulong _sequence;
         private long _packetsSent;
         private long _messagesSent;
         private long _bytesSent;
         private long _sendFailures;
+        private long _journalFailures;
+        private bool _faulted;
     }
 }

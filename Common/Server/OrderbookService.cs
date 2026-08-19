@@ -82,7 +82,7 @@ namespace MarketData.Common.Server
                 : ProcessRingUpdatesAsync(new WeakReference<OrderbookService>(this), _ringQueue, _ringShutdown.Token);
         }
 
-        private static async Task ProcessIncrementalUpdatesAsync(WeakReference<OrderbookService> model, 
+        private static async Task ProcessIncrementalUpdatesAsync(WeakReference<OrderbookService> model,
             ChannelReader<OrderbookUpdate> reader,
             TaskCompletionSource shutdownSource)
         {
@@ -403,7 +403,7 @@ namespace MarketData.Common.Server
         private async Task ProcessSubscribeRequestAsync(Subscription current, ServerClient client, CancellationToken token)
         {
             var (addedSubscriptions, removedSubscriptions) = client.Update(
-                current.Subscribe?.Ids.ToHashSet(), 
+                current.Subscribe?.Ids.ToHashSet(),
                 current.Unsubscribe?.Ids.ToHashSet());
 
             if (VerboseLogging && addedSubscriptions.Any())
