@@ -40,8 +40,8 @@ namespace MarketData.Bench
             Console.WriteLine($"Order book micro-benchmark: {Operations:N0} operations, {Trials} trials, minimum reported");
             Console.WriteLine($"Server GC: {System.Runtime.GCSettings.IsServerGC}, 64-bit: {Environment.Is64BitProcess}");
             Console.WriteLine();
-            Console.WriteLine($"{"Depth",6} {"Implementation",18} {"Mixed ns/op",13} {"Touch ns/op",13} {"Top10 ns/op",13} {"Top10 B/op",11}");
-            Console.WriteLine(new string('-', 80));
+            Console.WriteLine($"{"Depth",6} {"Implementation",18} {"Mixed ns/op",13} {"Touch ns/op",13} {"Top10 ns/op",13} {"Clear ns/op",13} {"Top10 B/op",11}");
+            Console.WriteLine(new string('-', 94));
 
             var results = new List<BookBenchmarkResult>();
 
@@ -58,11 +58,12 @@ namespace MarketData.Bench
                     var touch = MeasureTouch(name, depth, band, stream);
                     var snapshot = MeasureSnapshot(name, depth, band, stream);
                     var snapshotBytes = MeasureSnapshotAllocation(name, depth, band, stream);
+                    var clear = MeasureClear(name, depth, band, stream);
 
-                    Console.WriteLine($"{depth,6} {name,18} {mixed,13:F1} {touch,13:F1} {snapshot,13:F1} {snapshotBytes,11:F1}");
+                    Console.WriteLine($"{depth,6} {name,18} {mixed,13:F1} {touch,13:F1} {snapshot,13:F1} {clear,13:F1} {snapshotBytes,11:F1}");
                     results.Add(new BookBenchmarkResult(depth, name,
                         Math.Round(mixed, 2), Math.Round(touch, 2), Math.Round(snapshot, 2),
-                        Math.Round(snapshotBytes, 1)));
+                        Math.Round(clear, 2), Math.Round(snapshotBytes, 1)));
                 }
 
                 Console.WriteLine();
@@ -202,6 +203,38 @@ namespace MarketData.Bench
             return (GC.GetAllocatedBytesForCurrentThread() - before) / (double)iterations;
         }
 
+        /// <summary>
+        /// Cost of emptying a populated book.
+        /// </summary>
+        /// <remarks>
+        /// Measured because replaying a session against published snapshots clears the book once
+        /// per message, which turns an operation that looks like start-up housekeeping into one of
+        /// the hottest on the path. An implementation whose clear is proportional to its price band
+        /// rather than to the levels present is unusable there, and nothing else in this suite
+        /// would reveal it.
+        /// </remarks>
+        private static double MeasureClear(string name, int depth, int band, Operation[] stream)
+        {
+            var book = Create(name, depth, band);
+            const int iterations = 20_000;
+
+            return Measure(() =>
+            {
+                var accumulator = 0;
+
+                for (var i = 0; i < iterations; i++)
+                {
+                    // Refill before each clear, so what is timed is clearing a populated book
+                    // rather than clearing an empty one repeatedly.
+                    Populate(book, stream, depth);
+                    book.Clear();
+                    accumulator += book.Count(Side.Bid);
+                }
+
+                return accumulator;
+            }, iterations);
+        }
+
         private static void Populate(IOrderBook book, Operation[] stream, int depth)
         {
             foreach (var operation in stream)
@@ -250,6 +283,7 @@ namespace MarketData.Bench
         private readonly record struct Operation(bool IsUpsert, Side Side, int Price, uint Quantity);
 
         private record BookBenchmarkResult(int Depth, string Implementation,
-            double MixedNsPerOp, double TouchNsPerOp, double SnapshotNsPerOp, double SnapshotBytesPerOp);
+            double MixedNsPerOp, double TouchNsPerOp, double SnapshotNsPerOp, double ClearNsPerOp,
+            double SnapshotBytesPerOp);
     }
 }

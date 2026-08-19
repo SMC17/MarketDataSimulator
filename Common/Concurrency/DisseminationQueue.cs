@@ -44,6 +44,11 @@ namespace MarketData.Common.Concurrency
             }
         }
 
+        /// <summary>Total items resident across every producer's ring.</summary>
+        /// <remarks>
+        /// Sampled while producers and the consumer run, so this is an estimate: each ring's count
+        /// is individually consistent but the sum spans no single instant.
+        /// </remarks>
         public int Depth
         {
             get
@@ -105,11 +110,30 @@ namespace MarketData.Common.Concurrency
                     continue;
                 }
 
-                // Nothing to do: sleep until a producer says otherwise. The timeout is a
-                // belt-and-braces guard against a wake-up lost to a race between the last empty
-                // check and the wait.
-                _signal.Wait(TimeSpan.FromMilliseconds(1), CancellationToken.None);
+                // Nothing to do: sleep until a producer says otherwise.
+                //
+                // Reset before the last emptiness check, not after the wait. Resetting afterwards
+                // leaves the event set by a signal that arrived during the previous drain, so the
+                // next Wait returns immediately and burns a whole spin-and-yield pass discovering
+                // there is still nothing there. Clearing first and then re-checking cannot lose a
+                // wake-up: a Set racing in after the Reset either lands before the check (we find
+                // the item) or after it (the event is set, and Wait returns at once).
                 _signal.Reset();
+
+                if (TryDrainOne(out item))
+                    return true;
+
+                // The timeout is a belt-and-braces guard, and the token is honoured so shutdown is
+                // not delayed by a full spin-and-yield cycle after the wait returns.
+                try
+                {
+                    _signal.Wait(TimeSpan.FromMilliseconds(1), token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
                 spins = 0;
                 yields = 0;
             }

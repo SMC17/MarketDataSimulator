@@ -15,6 +15,9 @@ using System.Text.Json.Serialization;
 if (args.Length > 0 && args[0] == "books")
     Environment.Exit(BookBenchmark.Run(args.Skip(1).ToArray()));
 
+if (args.Length > 0 && args[0] == "realism")
+    Environment.Exit(RealismBenchmark.Run(args.Skip(1).ToArray()));
+
 if (args.Length > 0 && args[0] == "queue")
     Environment.Exit(QueueBenchmark.Run(args.Skip(1).ToArray()));
 

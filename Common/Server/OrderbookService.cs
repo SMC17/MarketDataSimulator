@@ -121,6 +121,12 @@ namespace MarketData.Common.Server
                         service = null;
                     }
                 }
+                catch (ChannelClosedException)
+                {
+                    // The writer completed: there is nothing left to read and never will be.
+                    // Swallowing this and looping is an unbounded spin.
+                    return;
+                }
                 catch (Exception e)
                 {
                     Console.WriteLine($"Error in {nameof(ProcessIncrementalUpdatesAsync)}: {e}");
@@ -185,12 +191,14 @@ namespace MarketData.Common.Server
 
             public ValueTask PublishAsync(OrderbookUpdate update)
             {
+                // Matches the channel transport, which drops until the server is listening. The two
+                // paths are compared against each other, so they have to agree on what counts.
+                if (_service._server == null)
+                    return ValueTask.CompletedTask;
+
                 Interlocked.Increment(ref _service._publishedUpdates);
 
-                var depth = Interlocked.Increment(ref _service._queuedUpdates);
-
-                if (depth > Interlocked.Read(ref _service._peakQueuedUpdates))
-                    Interlocked.Exchange(ref _service._peakQueuedUpdates, depth);
+                _service.RecordQueueDepth(Interlocked.Increment(ref _service._queuedUpdates));
 
                 if (!_ring.TryWrite(update))
                 {
@@ -230,10 +238,11 @@ namespace MarketData.Common.Server
 
                 message ??= ProtoAdapter.ToProto(update);
 
-                if (client.TryEnqueue(message, instrumentId, isSnapshot, isEmptySnapshot))
+                // Only a genuine queue write is a send. Drops are owned by the subscriber's own
+                // counter, which GetStatistics folds in - incrementing here as well counted every
+                // drop twice.
+                if (client.TryEnqueue(message, instrumentId, isSnapshot, isEmptySnapshot) == EnqueueResult.Queued)
                     Interlocked.Increment(ref _sentMessages);
-                else
-                    Interlocked.Increment(ref _droppedUpdates);
             }
         }
 
@@ -255,6 +264,9 @@ namespace MarketData.Common.Server
 
         public OrderbookServiceStatistics GetStatistics()
         {
+            // Drops live in exactly two places: this service's counter (ring-full drops, plus the
+            // final tally of every subscriber that has already disconnected) and the counters of the
+            // subscribers still connected. Summing the two is a partition, not a double count.
             var snapshot = _clientSnapshot;
             var clients = snapshot.Length;
             long liveDrops = 0;
@@ -358,6 +370,9 @@ namespace MarketData.Common.Server
                     }
 
                     client.Complete();
+
+                    // The client is about to leave _clientSnapshot, so GetStatistics will stop
+                    // seeing its counter. Fold it in once, here, as it goes.
                     Interlocked.Add(ref _droppedUpdates, client.DroppedUpdates);
 
                     if (VerboseLogging)
@@ -418,10 +433,8 @@ namespace MarketData.Common.Server
 
         private void EnqueueDirect(ServerClient client, OrderbookUpdate update)
         {
-            if (client.TryEnqueue(ProtoAdapter.ToProto(update), update.InstrumentId, update.IsSnapshot, update.IsEmptySnapshot))
+            if (client.TryEnqueue(ProtoAdapter.ToProto(update), update.InstrumentId, update.IsSnapshot, update.IsEmptySnapshot) == EnqueueResult.Queued)
                 Interlocked.Increment(ref _sentMessages);
-            else
-                Interlocked.Increment(ref _droppedUpdates);
         }
 
         public Task StopAsync()
@@ -439,23 +452,48 @@ namespace MarketData.Common.Server
 
             Interlocked.Increment(ref _publishedUpdates);
 
-            var depth = Interlocked.Increment(ref _queuedUpdates);
-
-            // Watermark rather than instantaneous depth: a backlog that forms and drains between
-            // two samples is still the fan-out failing to keep up with the matching engine.
-            if (depth > Interlocked.Read(ref _peakQueuedUpdates))
-                Interlocked.Exchange(ref _peakQueuedUpdates, depth);
+            RecordQueueDepth(Interlocked.Increment(ref _queuedUpdates));
 
             return _orderbookUpdateChannel.Writer.WriteAsync(update);
         }
 
+        /// <summary>
+        /// Raises the backlog high-water mark to <paramref name="depth"/> if it is a new maximum.
+        /// </summary>
+        /// <remarks>
+        /// Watermark rather than instantaneous depth: a backlog that forms and drains between two
+        /// samples is still the fan-out failing to keep up with the matching engine.
+        /// <para>
+        /// The compare-and-swap is the whole point. Read-then-Exchange looks equivalent but lets two
+        /// producers both observe a stale maximum and race to store, so the smaller depth can land
+        /// last and erase the larger one - under-reporting the backlog exactly when the fan-out is
+        /// falling behind, which is when the number matters. With one ring per producer this path is
+        /// genuinely concurrent.
+        /// </para>
+        /// </remarks>
+        private void RecordQueueDepth(long depth)
+        {
+            long seen;
+
+            while (depth > (seen = Interlocked.Read(ref _peakQueuedUpdates)))
+            {
+                if (Interlocked.CompareExchange(ref _peakQueuedUpdates, depth, seen) == seen)
+                    return;
+            }
+        }
+
         public void Dispose()
         {
-            _orderbookUpdateChannel.Writer.Complete();
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
 
+            // Signal shutdown before completing the writer. The reverse order leaves a window in
+            // which the drain loop sees the channel completed but not the shutdown flag, and spins
+            // on ChannelClosedException at full CPU.
+            _shutdownSource.TrySetResult();
             _ringShutdown.Cancel();
             _ringQueue?.Signal();
-            _shutdownSource.TrySetResult();
+            _orderbookUpdateChannel.Writer.TryComplete();
             try
             {
                 _incrementalUpdateTask.GetAwaiter().GetResult();
@@ -472,6 +510,7 @@ namespace MarketData.Common.Server
         }
 
 
+        private int _disposed;
         private long _queuedUpdates;
         private long _peakQueuedUpdates;
         private long _publishedUpdates;

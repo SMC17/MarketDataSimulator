@@ -113,13 +113,13 @@ namespace MarketData.Tests
             for (var i = 0; i < 6; i++)
                 ring.TryWrite(i);
 
-            var count = ring.PeekBatch(out var slots, out var start);
-            Assert.Equal(6, count);
+            var batch = ring.PeekBatch();
+            Assert.Equal(6, batch.Length);
 
-            for (var i = 0; i < count; i++)
-                Assert.Equal(i, slots[(start + i) & (ring.Capacity - 1)]);
+            for (var i = 0; i < batch.Length; i++)
+                Assert.Equal(i, batch[i]);
 
-            ring.Release(count);
+            ring.Release(batch.Length);
             Assert.True(ring.IsEmpty);
         }
 
@@ -132,14 +132,13 @@ namespace MarketData.Tests
             for (var i = 0; i < 6; i++) { ring.TryWrite(i); ring.TryRead(out _); }
             for (var i = 0; i < 5; i++) ring.TryWrite(100 + i);
 
-            var count = ring.PeekBatch(out _, out var start);
+            var batch = ring.PeekBatch();
 
-            Assert.Equal(6, start);
-            Assert.Equal(2, count); // 6 and 7, then the run wraps
-            ring.Release(count);
+            // The run stops at the end of the array: two items now, the other three after the wrap.
+            Assert.Equal(new[] { 100, 101 }, batch.ToArray());
+            ring.Release(batch.Length);
 
-            Assert.Equal(3, ring.PeekBatch(out _, out var nextStart));
-            Assert.Equal(0, nextStart);
+            Assert.Equal(new[] { 102, 103, 104 }, ring.PeekBatch().ToArray());
         }
 
         [Fact]
@@ -230,7 +229,8 @@ namespace MarketData.Tests
 
                 while (expected < items)
                 {
-                    var count = ring.PeekBatch(out var slots, out var start);
+                    var batch = ring.PeekBatch();
+                    var count = batch.Length;
 
                     if (count == 0)
                     {
@@ -240,7 +240,7 @@ namespace MarketData.Tests
 
                     for (var i = 0; i < count; i++)
                     {
-                        if (slots[start + i] != expected)
+                        if (batch[i] != expected)
                             Interlocked.Increment(ref outOfOrder);
 
                         expected++;

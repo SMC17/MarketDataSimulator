@@ -165,7 +165,7 @@ namespace MarketData.Bench
             {
                 for (var read = 0; read < items;)
                 {
-                    var count = ring.PeekBatch(out _, out _);
+                    var count = ring.PeekBatch().Length;
 
                     if (count == 0)
                     {
