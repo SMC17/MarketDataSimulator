@@ -1,0 +1,19 @@
+{
+  "Cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+  "Cores": 4,
+  "CpuFeatures": [
+    "avx2",
+    "avx512f",
+    "avx512bw",
+    "avx512dq",
+    "avx512vl",
+    "bmi1",
+    "bmi2",
+    "popcnt"
+  ],
+  "MemoryGb": 15.7,
+  "Os": "Ubuntu 24.04.4 LTS",
+  "Kernel": "6.18.5-fc-v20",
+  "DotnetRuntime": "8.0.30",
+  "ServerGarbageCollector": true
+}
