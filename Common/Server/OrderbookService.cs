@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using MarketData.Common.Concurrency;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 
@@ -16,6 +17,23 @@ namespace MarketData.Common.Server
         Task StopAsync();
         ValueTask OnOrderbookUpdateAsync(MarketData.Common.OrderbookUpdate update);
         OrderbookServiceStatistics GetStatistics();
+
+        /// <summary>
+        /// Registers a producer, returning the handle it must publish through.
+        /// </summary>
+        /// <remarks>
+        /// Called once per matching engine at start-up. With the ring-based queue this hands back a
+        /// dedicated single-producer ring, which is what lets the publish path avoid an interlocked
+        /// operation entirely; the channel-based queue ignores it and returns a shared handle.
+        /// </remarks>
+        IUpdateProducer RegisterProducer();
+    }
+
+    /// <summary>One matching engine's route into the dissemination path.</summary>
+    public interface IUpdateProducer
+    {
+        /// <summary>Publishes an update. Must be called from one thread only.</summary>
+        ValueTask PublishAsync(MarketData.Common.OrderbookUpdate update);
     }
 
     /// <summary>
@@ -45,14 +63,23 @@ namespace MarketData.Common.Server
         /// </summary>
         public bool VerboseLogging { get; }
 
-        public OrderbookService(int port, IOrderbookManager orderbookManager, bool verboseLogging = true, int queueCapacity = 1024)
+        /// <param name="useRingQueue">
+        /// Route the engine-to-fan-out hand-off through per-producer lock-free rings instead of a
+        /// channel. Both are kept so the two can be measured against each other on the same build;
+        /// see BENCHMARKS.md for what the difference turns out to be worth end to end.
+        /// </param>
+        public OrderbookService(int port, IOrderbookManager orderbookManager, bool verboseLogging = true,
+            int queueCapacity = 1024, bool useRingQueue = false)
         {
             Port = port;
             _orderbookManager = orderbookManager;
             VerboseLogging = verboseLogging;
             _queueCapacity = queueCapacity;
+            _ringQueue = useRingQueue ? new DisseminationQueue<OrderbookUpdate>() : null;
 
-            _incrementalUpdateTask = ProcessIncrementalUpdatesAsync(new WeakReference<OrderbookService>(this), _orderbookUpdateChannel.Reader, _shutdownSource);
+            _incrementalUpdateTask = _ringQueue is null
+                ? ProcessIncrementalUpdatesAsync(new WeakReference<OrderbookService>(this), _orderbookUpdateChannel.Reader, _shutdownSource)
+                : ProcessRingUpdatesAsync(new WeakReference<OrderbookService>(this), _ringQueue, _ringShutdown.Token);
         }
 
         private static async Task ProcessIncrementalUpdatesAsync(WeakReference<OrderbookService> model, 
@@ -106,6 +133,81 @@ namespace MarketData.Common.Server
         /// whole population and each subscriber gets a queue hand-off, so the cost per subscriber is
         /// a set lookup and a bounded-queue write rather than an awaited network round trip.
         /// </summary>
+        /// <summary>
+        /// Drains the per-producer rings on a dedicated thread.
+        /// </summary>
+        /// <remarks>
+        /// A long-running thread rather than a pooled task: this loop spins before it sleeps, and
+        /// occupying a thread-pool thread that way would starve everything else the pool has to do.
+        /// </remarks>
+        private static Task ProcessRingUpdatesAsync(WeakReference<OrderbookService> model,
+            DisseminationQueue<OrderbookUpdate> queue, CancellationToken token)
+        {
+            return Task.Factory.StartNew(() =>
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    if (!queue.TryTake(out var update, token))
+                        return;
+
+                    if (!model.TryGetTarget(out var service))
+                        return;
+
+                    try
+                    {
+                        Interlocked.Decrement(ref service._queuedUpdates);
+                        service.Broadcast(update);
+                        Interlocked.Increment(ref service._disseminatedUpdates);
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine($"Error in {nameof(ProcessRingUpdatesAsync)}: {e}");
+                    }
+                    finally
+                    {
+                        service = null;
+                    }
+                }
+            }, token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        }
+
+        /// <summary>
+        /// A producer's private route into the fan-out: its own ring, so publishing needs no
+        /// interlocked operation on any shared cursor.
+        /// </summary>
+        private sealed class RingProducer : IUpdateProducer
+        {
+            public RingProducer(OrderbookService service, RingBuffer<OrderbookUpdate> ring)
+            {
+                _service = service;
+                _ring = ring;
+            }
+
+            public ValueTask PublishAsync(OrderbookUpdate update)
+            {
+                Interlocked.Increment(ref _service._publishedUpdates);
+
+                var depth = Interlocked.Increment(ref _service._queuedUpdates);
+
+                if (depth > Interlocked.Read(ref _service._peakQueuedUpdates))
+                    Interlocked.Exchange(ref _service._peakQueuedUpdates, depth);
+
+                if (!_ring.TryWrite(update))
+                {
+                    // Full means the fan-out has fallen an entire ring behind, which is a different
+                    // failure from one slow subscriber and is counted separately.
+                    Interlocked.Decrement(ref _service._queuedUpdates);
+                    Interlocked.Increment(ref _service._droppedUpdates);
+                }
+
+                _service._ringQueue.Signal();
+                return ValueTask.CompletedTask;
+            }
+
+            private readonly OrderbookService _service;
+            private readonly RingBuffer<OrderbookUpdate> _ring;
+        }
+
         private void Broadcast(OrderbookUpdate update)
         {
             // Read without a lock: the array is replaced on connect/disconnect, never mutated.
@@ -133,6 +235,22 @@ namespace MarketData.Common.Server
                 else
                     Interlocked.Increment(ref _droppedUpdates);
             }
+        }
+
+        /// <summary>
+        /// A dedicated ring per producer when the ring queue is on; otherwise the shared channel,
+        /// which is already safe for many producers.
+        /// </summary>
+        public IUpdateProducer RegisterProducer()
+            => _ringQueue is null ? new ChannelProducer(this) : new RingProducer(this, _ringQueue.AddProducer());
+
+        private sealed class ChannelProducer : IUpdateProducer
+        {
+            public ChannelProducer(OrderbookService service) => _service = service;
+
+            public ValueTask PublishAsync(OrderbookUpdate update) => _service.OnOrderbookUpdateAsync(update);
+
+            private readonly OrderbookService _service;
         }
 
         public OrderbookServiceStatistics GetStatistics()
@@ -335,8 +453,20 @@ namespace MarketData.Common.Server
         {
             _orderbookUpdateChannel.Writer.Complete();
 
-            _shutdownSource.SetResult();
-            _incrementalUpdateTask.GetAwaiter().GetResult();
+            _ringShutdown.Cancel();
+            _ringQueue?.Signal();
+            _shutdownSource.TrySetResult();
+            try
+            {
+                _incrementalUpdateTask.GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected when the ring loop is cancelled on shutdown.
+            }
+
+            _ringQueue?.Dispose();
+            _ringShutdown.Dispose();
 
             StopAsync().GetAwaiter().GetResult();
         }
@@ -350,6 +480,8 @@ namespace MarketData.Common.Server
         private long _droppedUpdates;
         private long _failedSends;
         private readonly int _queueCapacity;
+        private readonly DisseminationQueue<OrderbookUpdate> _ringQueue;
+        private readonly CancellationTokenSource _ringShutdown = new CancellationTokenSource();
         private volatile ServerClient[] _clientSnapshot = Array.Empty<ServerClient>();
         private Grpc.Core.Server _server = null;
         private readonly IOrderbookManager _orderbookManager = null;

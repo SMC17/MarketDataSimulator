@@ -79,6 +79,13 @@ namespace MarketData.Server.Configuration
         /// <summary>Multicast dissemination settings. Disabled by default; unicast gRPC is used instead.</summary>
         public MulticastConfiguration Multicast { get; set; } = new MulticastConfiguration();
 
+        /// <summary>
+        /// Route the matching-engine-to-fan-out hand-off through per-producer lock-free rings
+        /// instead of a channel. Both are kept so the two can be compared on the same build; see
+        /// BENCHMARKS.md for what the difference is actually worth end to end.
+        /// </summary>
+        public bool UseRingQueue { get; set; }
+
         public static ServerConfiguration FromAppSettings() => FromJson("appsettings.json");
         public static ServerConfiguration FromJson(string filename)
         {

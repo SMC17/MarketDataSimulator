@@ -21,13 +21,13 @@ namespace MarketData.Server
     /// </remarks>
     internal sealed class Orderbook : IDisposable
     {
-        public Orderbook(Instrument instrument, IOrderbookService service, string bookImplementation, int priceBand)
+        public Orderbook(Instrument instrument, IUpdateProducer producer, string bookImplementation, int priceBand)
         {
             _instrument = instrument;
             _depth = instrument.Specifications.Depth;
             _flow = new OrderFlowSimulator(new LimitOrderBook(-priceBand, priceBand));
 
-            _spinTask = GenerateUpdatesAsync(new WeakReference<Orderbook>(this), instrument, service, _disposedSource);
+            _spinTask = GenerateUpdatesAsync(new WeakReference<Orderbook>(this), instrument, producer, _disposedSource);
         }
 
         /// <summary>
@@ -40,7 +40,7 @@ namespace MarketData.Server
 
         private static async Task GenerateUpdatesAsync(WeakReference<Orderbook> orderbook,
             Instrument instrument,
-            IOrderbookService service,
+            IUpdateProducer producer,
             TaskCompletionSource disposedSource)
         {
             var random = new Random(instrument.Id * 7919 + DateTime.Now.Millisecond);
@@ -81,7 +81,7 @@ namespace MarketData.Server
                         while (due >= 1d)
                         {
                             due -= 1d;
-                            await model.PublishUpdateAsync(random, service).ConfigureAwait(false);
+                            await model.PublishUpdateAsync(random, producer).ConfigureAwait(false);
                         }
                     }
                     finally
@@ -106,7 +106,7 @@ namespace MarketData.Server
         /// depth feed necessarily agrees with the engine's book, because the feed is a function of
         /// it.
         /// </remarks>
-        private async ValueTask PublishUpdateAsync(Random random, IOrderbookService service)
+        private async ValueTask PublishUpdateAsync(Random random, IUpdateProducer producer)
         {
             OrderbookUpdate snapshot = null;
             var updates = _updates;
@@ -145,12 +145,12 @@ namespace MarketData.Server
 
             if (snapshot is not null)
             {
-                await service.OnOrderbookUpdateAsync(snapshot with { SourceTimestamp = stamp }).ConfigureAwait(false);
+                await producer.PublishAsync(snapshot with { SourceTimestamp = stamp }).ConfigureAwait(false);
                 return;
             }
 
             foreach (var update in updates)
-                await service.OnOrderbookUpdateAsync(update with { SourceTimestamp = stamp }).ConfigureAwait(false);
+                await producer.PublishAsync(update with { SourceTimestamp = stamp }).ConfigureAwait(false);
         }
 
         /// <summary>Turns the engine's order-level events into aggregated level updates.</summary>

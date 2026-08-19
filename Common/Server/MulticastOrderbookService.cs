@@ -143,6 +143,18 @@ namespace MarketData.Common.Server
             _publisher.Flush();
         }
 
+        /// <summary>Publishing is a single send under a lock, so producers share one handle.</summary>
+        public IUpdateProducer RegisterProducer() => new DirectProducer(this);
+
+        private sealed class DirectProducer : IUpdateProducer
+        {
+            public DirectProducer(MulticastOrderbookService service) => _service = service;
+
+            public ValueTask PublishAsync(OrderbookUpdate update) => _service.OnOrderbookUpdateAsync(update);
+
+            private readonly MulticastOrderbookService _service;
+        }
+
         public OrderbookServiceStatistics GetStatistics()
             => new OrderbookServiceStatistics(
                 ConnectedClients: 0,            // unknowable by design: the server has no subscriber table
