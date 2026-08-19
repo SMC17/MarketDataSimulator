@@ -107,6 +107,30 @@ contemporaneous relationship with returns in the recorded AMZN session but less 
 R². Stylized-fact checks also reject the simulator as a realistic price model. It is a deterministic
 systems load generator; real market data remains the oracle for distribution-dependent research.
 
+### Scaling with the audience (pre-v2 generation)
+
+The table above measures the v2 protocol. How the architecture scales with the *number of
+subscribers* is a separate question, measured before v2 on a different host — so these figures are
+not comparable with the ones above and are never combined with them.
+
+<!-- generated: cost-per-message -->
+| Transport | Highest sustained subscribers | Messages/s | Server CPU | Server CPU per message |
+|---|---|---|---|---|
+| Unicast gRPC | 900 | 86,621 | 229.4% | **26.48 µs** |
+| Multicast | 6,000 | 594,067 | 73.2% | **1.23 µs** |
+
+Multicast delivers each message for **21× less server CPU**, to **6.7× the subscribers** at **6.9× the throughput**.
+<!-- /generated -->
+
+TCP fan-out costs one write per subscriber per update, so unicast latency tracks audience size
+rather than workload: at a fixed 10,000 msg/s, 100 subscribers see 1.61 ms and 1,000 see 18.63 ms.
+Multicast removes the term outright — the publisher's packet rate stays between 98.6 and 100.3/s
+from 100 subscribers to 6,000, because it sends once and holds no subscriber table at all. Multicast
+sustained 6,000 subscribers at 34.4 ms mean with zero gaps and zero stale receivers; 8,000 failed
+with 594 detected sequence gaps, which is the sequencing machinery doing its job rather than
+silently corrupting a book. Full sweeps, repeatability and threats to validity are in
+[BENCHMARKS.md](BENCHMARKS.md#transport-scaling-pre-v2-generation).
+
 ## Build and run
 
 ```bash
