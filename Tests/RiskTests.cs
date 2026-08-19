@@ -16,8 +16,9 @@ namespace MarketData.Tests
         private const string Trader = "TRADER-1";
         private const int Instrument = 7;
 
-        private static PreTradeRiskGate Gate(ParticipantLimits limits = null,
-            InstrumentMaster reference = null, SessionCalendar calendar = null, Func<DateTime> clock = null)
+        private static PreTradeRiskGate Gate(ParticipantLimits? limits = null,
+            InstrumentMaster? reference = null, SessionCalendar? calendar = null,
+            Func<DateTime>? clock = null)
         {
             var gate = new PreTradeRiskGate(reference, calendar, clock);
             gate.Register(Trader, limits ?? ParticipantLimits.Default);
@@ -81,6 +82,29 @@ namespace MarketData.Tests
             Assert.True(gate.Check(Order(quantity: 100, price: 10_000)).IsAccepted);
             Assert.Equal(RiskRejectReason.OrderNotionalTooLarge,
                 gate.Check(Order(quantity: 101, price: 10_000)).Reason);
+        }
+
+        [Fact]
+        public void NegativePricesCannotBypassNotionalOrCreditLimits()
+        {
+            var gate = Gate(new ParticipantLimits(
+                MaxOrderNotional: 999, CreditLimit: 10_000));
+
+            var decision = gate.Check(Order(quantity: 100, price: -10));
+
+            Assert.Equal(RiskRejectReason.OrderNotionalTooLarge, decision.Reason);
+            Assert.Equal(0, gate.StateOf(Trader).ReservedCredit);
+        }
+
+        [Fact]
+        public void StructurallyInvalidOrdersFailClosed()
+        {
+            var gate = Gate();
+            var decision = gate.Check(new OrderRequest(Trader, Instrument,
+                (Side)byte.MaxValue, 1_000, 1));
+
+            Assert.Equal(RiskRejectReason.InvalidOrder, decision.Reason);
+            Assert.Equal(0, gate.StateOf(Trader).ReservedCredit);
         }
 
         [Fact]
@@ -247,6 +271,31 @@ namespace MarketData.Tests
             Assert.Equal(1_000, state.AvailableCredit);
         }
 
+        [Fact]
+        public void CreditReservationCannotWrapAtLongMaxValue()
+        {
+            var state = new ParticipantRiskState("P",
+                new ParticipantLimits(CreditLimit: long.MaxValue));
+
+            Assert.True(state.TryReserveCredit(long.MaxValue));
+            Assert.False(state.TryReserveCredit(1));
+            Assert.Equal(long.MaxValue, state.ReservedCredit);
+        }
+
+        [Fact]
+        public void LimitReplacementCannotInvalidateLiveExposure()
+        {
+            var state = new ParticipantRiskState("P",
+                new ParticipantLimits(CreditLimit: 1_000, MaxNetPosition: 100));
+            Assert.True(state.TryReserveCredit(500));
+            state.ApplyFill(Instrument, 50);
+
+            Assert.Throws<InvalidOperationException>(() => state.ReplaceLimits(
+                new ParticipantLimits(CreditLimit: 499, MaxNetPosition: 100)));
+            Assert.Throws<InvalidOperationException>(() => state.ReplaceLimits(
+                new ParticipantLimits(CreditLimit: 1_000, MaxNetPosition: 49)));
+        }
+
         // ---------------------------------------------------------------- position and rate
 
         [Fact]
@@ -376,6 +425,25 @@ namespace MarketData.Tests
                 "A", 1, Side.Bid, 100, 10, RiskRejectReason.None));
 
             Assert.Single(seen);
+        }
+
+        [Fact]
+        public void InstrumentRevocationSuppressesAnExistingDropCopySubscription()
+        {
+            var gate = new PreTradeRiskGate();
+            gate.Register("A");
+            gate.GrantAll("A", Entitlement.All);
+            var service = new DropCopyService(gate);
+            var seen = new List<DropCopyEvent>();
+            using var subscription = service.Subscribe("A", seen.Add);
+
+            gate.Grant("A", 1, Entitlement.Trade);
+            service.Publish(new DropCopyEvent(1, DateTime.UtcNow, AuditEventType.Fill,
+                "A", 1, Side.Bid, 100, 10, RiskRejectReason.None));
+
+            Assert.Empty(seen);
+            Assert.Equal(1, service.Suppressed);
+            Assert.Equal(0, service.Published);
         }
     }
 
