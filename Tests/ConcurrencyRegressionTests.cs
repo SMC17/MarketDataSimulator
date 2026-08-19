@@ -107,17 +107,17 @@ namespace MarketData.Tests
             var negatives = 0;
             var aboveCapacity = 0;
 
-            var producer = Task.Run(() =>
+            var producer = Task.Factory.StartNew(() =>
             {
                 while (!cancellationToken.IsCancellationRequested)
                     ring.TryWrite(1);
-            }, cancellationToken);
+            }, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
-            var consumer = Task.Run(() =>
+            var consumer = Task.Factory.StartNew(() =>
             {
                 while (!cancellationToken.IsCancellationRequested)
                     ring.TryRead(out _);
-            }, cancellationToken);
+            }, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
             while (!cancellationToken.IsCancellationRequested)
             {
