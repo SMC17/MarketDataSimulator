@@ -52,9 +52,6 @@ namespace MarketData.Common.Matching
         /// <summary>Unfilled size. Zero means fully executed.</summary>
         public uint Remaining;
 
-        /// <summary>Sequence in which the order joined its price level; lower is ahead in the queue.</summary>
-        public ulong Priority;
-
         internal Order Previous;
         internal Order Next;
         internal OrderLevel Level;

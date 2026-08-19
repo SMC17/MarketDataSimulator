@@ -14,8 +14,4 @@ namespace MarketData.Common
         Remove,
     }
     public record OrderbookLevel(int Price, bool IsBuy, uint Quantity);
-    public record OrderbookLevelUpdate(OrderbookUpdateType UpdateType, OrderbookLevel Level)
-    {
-        public static OrderbookLevelUpdate Empty { get; } = new OrderbookLevelUpdate(OrderbookUpdateType.Invalid, null);
-    }
 }
