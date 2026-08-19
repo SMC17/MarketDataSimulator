@@ -20,7 +20,7 @@ This is a research system, not a production venue. The implemented boundary is e
 | Durability | Single-writer segmented WAL, restart repair, CRC-checked checkpoints |
 | Recovery | Bounded reorder, exact TCP gap fill, sparse range index, atomic snapshots |
 | Governance | 128-bit layout fingerprints, conservative compatibility, bitemporal reference data |
-| Validation | Differential/property tests and LOBSTER-derived NASDAQ replay |
+| Validation | Differential/property tests, virtual-time network faults, NASDAQ replay |
 | Analytics | Allocation-free order-flow imbalance, online regression, stylized facts |
 
 The matching engine is single-writer by design. Concurrency sits before and after sequencing, not
@@ -189,6 +189,7 @@ Common/Governance schema fingerprints, compatibility, negotiation
 Common/Reference  effective-dated instruments and venue sessions
 Common/Lobster    exact integer parser and replay oracle
 Common/Analytics  streaming microstructure statistics
+Common/Simulation virtual-time datagram faults and bounded delivery
 Server            deterministic simulator and validated configuration
 Bench             protocol, matching, queue, replay, and transport harnesses
 Tests             deterministic, adversarial, differential, and real-data tests

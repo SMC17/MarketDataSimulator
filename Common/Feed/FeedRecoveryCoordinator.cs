@@ -19,11 +19,11 @@ namespace MarketData.Common.Feed
     public sealed class FeedRecoveryCoordinator
     {
         private readonly FeedDecoder _decoder;
-        private readonly RetransmissionClient _client;
+        private readonly IRetransmissionClient _client;
         private readonly SemaphoreSlim _gate = new(1, 1);
         private int _repairing;
 
-        public FeedRecoveryCoordinator(FeedDecoder decoder, RetransmissionClient client)
+        public FeedRecoveryCoordinator(FeedDecoder decoder, IRetransmissionClient client)
         {
             _decoder = decoder ?? throw new ArgumentNullException(nameof(decoder));
             _client = client ?? throw new ArgumentNullException(nameof(client));
