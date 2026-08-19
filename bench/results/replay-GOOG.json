@@ -1,0 +1,137 @@
+{
+  "Session": "GOOG 2012-06-21 level 5",
+  "Symbol": "GOOG",
+  "Levels": 5,
+  "Transitions": [
+    {
+      "Implementation": "SortedArray",
+      "MessagesApplied": 112672,
+      "RowsCompared": 112672,
+      "RowsMatched": 112672,
+      "MatchRate": 1,
+      "MessagesPerSecond": 1213803,
+      "FirstMismatchRow": -1,
+      "FirstMismatchDetail": null,
+      "NegativeLevels": 0,
+      "HiddenExecutions": 3913
+    },
+    {
+      "Implementation": "Vectorized",
+      "MessagesApplied": 112672,
+      "RowsCompared": 112672,
+      "RowsMatched": 112672,
+      "MatchRate": 1,
+      "MessagesPerSecond": 1160851,
+      "FirstMismatchRow": -1,
+      "FirstMismatchDetail": null,
+      "NegativeLevels": 0,
+      "HiddenExecutions": 3913
+    },
+    {
+      "Implementation": "Ladder",
+      "MessagesApplied": 112672,
+      "RowsCompared": 112672,
+      "RowsMatched": 112672,
+      "MatchRate": 1,
+      "MessagesPerSecond": 100041,
+      "FirstMismatchRow": -1,
+      "FirstMismatchDetail": null,
+      "NegativeLevels": 0,
+      "HiddenExecutions": 3913
+    },
+    {
+      "Implementation": "Tree",
+      "MessagesApplied": 112672,
+      "RowsCompared": 112672,
+      "RowsMatched": 112672,
+      "MatchRate": 1,
+      "MessagesPerSecond": 381941,
+      "FirstMismatchRow": -1,
+      "FirstMismatchDetail": null,
+      "NegativeLevels": 0,
+      "HiddenExecutions": 3913
+    }
+  ],
+  "Cumulative": [
+    {
+      "Implementation": "SortedArray",
+      "MessagesApplied": 112673,
+      "RowsCompared": 112672,
+      "RowsMatched": 48,
+      "MatchRate": 0.000426,
+      "MessagesPerSecond": 1419722,
+      "FirstMismatchRow": 35,
+      "FirstMismatchDetail": "row 35 after 34200.203135277 VisibleExecution #16155653 100@5794000 dir 1: bid level 5: expected 509@5785000, got 500@5785000",
+      "NegativeLevels": 3446,
+      "HiddenExecutions": 3913
+    },
+    {
+      "Implementation": "Vectorized",
+      "MessagesApplied": 112673,
+      "RowsCompared": 112672,
+      "RowsMatched": 48,
+      "MatchRate": 0.000426,
+      "MessagesPerSecond": 1408632,
+      "FirstMismatchRow": 35,
+      "FirstMismatchDetail": "row 35 after 34200.203135277 VisibleExecution #16155653 100@5794000 dir 1: bid level 5: expected 509@5785000, got 500@5785000",
+      "NegativeLevels": 3446,
+      "HiddenExecutions": 3913
+    },
+    {
+      "Implementation": "Ladder",
+      "MessagesApplied": 112673,
+      "RowsCompared": 112672,
+      "RowsMatched": 48,
+      "MatchRate": 0.000426,
+      "MessagesPerSecond": 891611,
+      "FirstMismatchRow": 35,
+      "FirstMismatchDetail": "row 35 after 34200.203135277 VisibleExecution #16155653 100@5794000 dir 1: bid level 5: expected 509@5785000, got 500@5785000",
+      "NegativeLevels": 3446,
+      "HiddenExecutions": 3913
+    },
+    {
+      "Implementation": "Tree",
+      "MessagesApplied": 112673,
+      "RowsCompared": 112672,
+      "RowsMatched": 48,
+      "MatchRate": 0.000426,
+      "MessagesPerSecond": 971489,
+      "FirstMismatchRow": 35,
+      "FirstMismatchDetail": "row 35 after 34200.203135277 VisibleExecution #16155653 100@5794000 dir 1: bid level 5: expected 509@5785000, got 500@5785000",
+      "NegativeLevels": 3446,
+      "HiddenExecutions": 3913
+    }
+  ],
+  "CumulativeAccuracyByDepth": [
+    {
+      "Levels": 1,
+      "RowsExact": 229,
+      "Share": 0.002032
+    },
+    {
+      "Levels": 2,
+      "RowsExact": 188,
+      "Share": 0.001669
+    },
+    {
+      "Levels": 3,
+      "RowsExact": 172,
+      "Share": 0.001527
+    },
+    {
+      "Levels": 4,
+      "RowsExact": 56,
+      "Share": 0.000497
+    },
+    {
+      "Levels": 5,
+      "RowsExact": 48,
+      "Share": 0.000426
+    }
+  ],
+  "Parser": {
+    "MessagesPerSecond": 8703740,
+    "MegabytesPerSecond": 341.4,
+    "BytesPerMessage": 0
+  }
+}

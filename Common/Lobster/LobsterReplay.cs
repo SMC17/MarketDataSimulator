@@ -10,8 +10,8 @@ namespace MarketData.Common.Lobster
         public long RowsCompared;
         public long RowsMatched;
 
-        /// <summary>Rows whose top-k levels matched, indexed by k-1 for k in 1..10.</summary>
-        public readonly long[] MatchedByDepth = new long[LobsterReplay.LevelsInReference];
+        /// <summary>Rows whose top-k levels matched, indexed by k-1.</summary>
+        public readonly long[] MatchedByDepth = new long[LobsterReplay.MaxLevels];
         public long FirstMismatchRow = -1;
         public string FirstMismatchDetail;
         public long NegativeLevels;
@@ -51,7 +51,25 @@ namespace MarketData.Common.Lobster
     /// </remarks>
     public static class LobsterReplay
     {
-        public const int LevelsInReference = 10;
+        /// <summary>Deepest reference file this supports; LOBSTER publishes 1, 5, 10, 30 and 50.</summary>
+        public const int MaxLevels = 50;
+
+        /// <summary>
+        /// Levels in a reference file, inferred from its first row.
+        /// </summary>
+        /// <remarks>
+        /// LOBSTER encodes the level count in the filename, but the file itself already states it:
+        /// four columns per level. Reading it from the data means a level-5 and a level-10 session
+        /// go through the same code without anyone having to pass the right number in, and a
+        /// mismatched filename cannot silently misparse a row.
+        /// </remarks>
+        public static int DetectLevels(ReadOnlySpan<byte> reference)
+        {
+            var reader = new LobsterReader(reference);
+            Span<int> row = stackalloc int[MaxLevels * 4];
+
+            return reader.TryReadBookRow(row, out var fields) ? fields / 4 : 0;
+        }
 
         /// <param name="messages">Raw bytes of the LOBSTER message file.</param>
         /// <param name="reference">Raw bytes of the matching orderbook file.</param>
@@ -64,14 +82,19 @@ namespace MarketData.Common.Lobster
             IOrderBook book, int warmupMessages = 0)
         {
             var result = new ReplayResult();
+            var levels = DetectLevels(reference);
+
+            if (levels == 0)
+                return result;
+
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
 
             var messageReader = new LobsterReader(messages);
             var referenceReader = new LobsterReader(reference);
 
-            Span<int> referenceRow = stackalloc int[LevelsInReference * 4];
-            Span<PriceLevel> asks = stackalloc PriceLevel[LevelsInReference];
-            Span<PriceLevel> bids = stackalloc PriceLevel[LevelsInReference];
+            Span<int> referenceRow = stackalloc int[levels * 4];
+            Span<PriceLevel> asks = stackalloc PriceLevel[levels];
+            Span<PriceLevel> bids = stackalloc PriceLevel[levels];
 
             var row = 0L;
 
@@ -91,7 +114,7 @@ namespace MarketData.Common.Lobster
                 if (row == warmupMessages)
                 {
                     // Re-seed from the exchange's own state, then judge everything after it.
-                    Seed(book, referenceRow);
+                    Seed(book, referenceRow, levels);
                     continue;
                 }
 
@@ -107,12 +130,12 @@ namespace MarketData.Common.Lobster
                 // than a single verdict, because the honest answer depends on depth: the seed
                 // reveals only ten levels, so anything resting deeper is unknowable from the
                 // message file and surfaces as error at the bottom of the window first.
-                var correctDepth = CorrectDepth(referenceRow, asks, askCount, bids, bidCount, out var detail);
+                var correctDepth = CorrectDepth(referenceRow, levels, asks, askCount, bids, bidCount, out var detail);
 
-                for (var k = 0; k < correctDepth; k++)
+                for (var k = 0; k < correctDepth && k < result.MatchedByDepth.Length; k++)
                     result.MatchedByDepth[k]++;
 
-                if (correctDepth == LevelsInReference)
+                if (correctDepth == levels)
                 {
                     result.RowsMatched++;
                 }
@@ -160,7 +183,12 @@ namespace MarketData.Common.Lobster
         /// because a message that removes a level promotes an unknown eleventh level into the
         /// window; leaving one slot of slack keeps every compared level knowable.
         /// </summary>
-        public const int TransitionLevels = LevelsInReference - 1;
+        /// <summary>
+        /// Levels compared in a single-step transition: one fewer than the file publishes, because
+        /// a message that removes a level promotes an unknown deeper level into the window and
+        /// leaving a slot of slack keeps every compared level knowable.
+        /// </summary>
+        public static int TransitionLevels(int levels) => levels - 1;
 
         /// <summary>
         /// Validates each message as a single transition between two published book states.
@@ -184,15 +212,20 @@ namespace MarketData.Common.Lobster
             IOrderBook book)
         {
             var result = new ReplayResult();
+            var levels = DetectLevels(reference);
+
+            if (levels == 0)
+                return result;
+
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
 
             var messageReader = new LobsterReader(messages);
             var referenceReader = new LobsterReader(reference);
 
-            Span<int> previousRow = stackalloc int[LevelsInReference * 4];
-            Span<int> currentRow = stackalloc int[LevelsInReference * 4];
-            Span<PriceLevel> asks = stackalloc PriceLevel[LevelsInReference];
-            Span<PriceLevel> bids = stackalloc PriceLevel[LevelsInReference];
+            Span<int> previousRow = stackalloc int[levels * 4];
+            Span<int> currentRow = stackalloc int[levels * 4];
+            Span<PriceLevel> asks = stackalloc PriceLevel[levels];
+            Span<PriceLevel> bids = stackalloc PriceLevel[levels];
 
             // The first message's prior state is not in the file, so start from the second.
             if (!messageReader.TryReadMessage(out _) || !referenceReader.TryReadBookRow(previousRow, out _))
@@ -209,14 +242,14 @@ namespace MarketData.Common.Lobster
                 if (message.Type == LobsterEventType.HiddenExecution)
                     result.HiddenExecutions++;
 
-                if (!IsVerifiable(previousRow, message))
+                if (!IsVerifiable(previousRow, levels, message))
                 {
                     result.Unverifiable++;
                     currentRow.CopyTo(previousRow);
                     continue;
                 }
 
-                Seed(book, previousRow);
+                Seed(book, previousRow, levels);
                 Apply(book, message, result);
 
                 var askCount = book.CopyTo(Side.Ask, asks);
@@ -224,12 +257,12 @@ namespace MarketData.Common.Lobster
 
                 result.RowsCompared++;
 
-                var correctDepth = CorrectDepth(currentRow, asks, askCount, bids, bidCount, out var detail);
+                var correctDepth = CorrectDepth(currentRow, levels, asks, askCount, bids, bidCount, out var detail);
 
                 for (var k = 0; k < correctDepth && k < result.MatchedByDepth.Length; k++)
                     result.MatchedByDepth[k]++;
 
-                if (correctDepth >= TransitionLevels)
+                if (correctDepth >= TransitionLevels(levels))
                 {
                     result.RowsMatched++;
                 }
@@ -251,7 +284,7 @@ namespace MarketData.Common.Lobster
         /// <summary>
         /// True when a level-10 snapshot is enough to predict the message's effect on the window.
         /// </summary>
-        private static bool IsVerifiable(ReadOnlySpan<int> previousRow, in LobsterMessage message)
+        private static bool IsVerifiable(ReadOnlySpan<int> previousRow, int levels, in LobsterMessage message)
         {
             if (!message.AffectsVisibleBook)
                 return true; // no change expected, which is itself worth checking
@@ -259,7 +292,7 @@ namespace MarketData.Common.Lobster
             // The message must land at or inside the deepest level published for its side,
             // otherwise the snapshot simply does not say what is there.
             var isBid = message.Side == Side.Bid;
-            var deepestOffset = (LevelsInReference - 1) * 4 + (isBid ? 2 : 0);
+            var deepestOffset = (levels - 1) * 4 + (isBid ? 2 : 0);
             var deepestPrice = previousRow[deepestOffset];
             var deepestSize = previousRow[deepestOffset + 1];
 
@@ -270,11 +303,11 @@ namespace MarketData.Common.Lobster
         }
 
         /// <summary>Replaces book state with a reference row, discarding whatever was there.</summary>
-        public static void Seed(IOrderBook book, ReadOnlySpan<int> referenceRow)
+        public static void Seed(IOrderBook book, ReadOnlySpan<int> referenceRow, int levels)
         {
             book.Clear();
 
-            for (var level = 0; level < LevelsInReference; level++)
+            for (var level = 0; level < levels; level++)
             {
                 var offset = level * 4;
                 var askPrice = referenceRow[offset];
@@ -291,11 +324,11 @@ namespace MarketData.Common.Lobster
         }
 
         /// <summary>Number of leading levels, on both sides, that match the reference exactly.</summary>
-        private static int CorrectDepth(ReadOnlySpan<int> referenceRow,
+        private static int CorrectDepth(ReadOnlySpan<int> referenceRow, int levels,
             ReadOnlySpan<PriceLevel> asks, int askCount,
             ReadOnlySpan<PriceLevel> bids, int bidCount, out string detail)
         {
-            for (var level = 0; level < LevelsInReference; level++)
+            for (var level = 0; level < levels; level++)
             {
                 var offset = level * 4;
 
@@ -307,7 +340,7 @@ namespace MarketData.Common.Lobster
             }
 
             detail = null;
-            return LevelsInReference;
+            return levels;
         }
 
         private static bool LevelMatches(int expectedPrice, int expectedSize,
