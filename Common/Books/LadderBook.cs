@@ -69,6 +69,26 @@ namespace MarketData.Common.Books
             return true;
         }
 
+        public bool TryGetQuantity(Side side, int price, out uint quantity)
+        {
+            if (price < MinPrice || price > MaxPrice)
+            {
+                quantity = 0;
+                return false;
+            }
+
+            var slot = price - MinPrice;
+
+            if (!_index.IsOccupied(side, slot))
+            {
+                quantity = 0;
+                return false;
+            }
+
+            quantity = _quantities[(int)side][slot];
+            return true;
+        }
+
         public bool Upsert(Side side, int price, uint quantity)
         {
             if (quantity == 0)
@@ -133,12 +153,27 @@ namespace MarketData.Common.Books
             return written;
         }
 
+        /// <summary>
+        /// Empties the book in time proportional to the levels present, not to the price band.
+        /// </summary>
+        /// <remarks>
+        /// Clearing the whole quantity array is the obvious implementation and costs a memset over
+        /// the entire band - here nearly a megabyte - regardless of whether ten levels were resting
+        /// or none. That is invisible when a book is cleared once at startup and ruinous when it is
+        /// cleared per message, as replaying a session against published snapshots does. Walking
+        /// the occupancy index instead touches only what is actually there.
+        /// </remarks>
         public void Clear()
         {
-            _index.Clear();
-
             for (var side = 0; side < 2; side++)
-                Array.Clear(_quantities[side], 0, _quantities[side].Length);
+            {
+                var quantities = _quantities[side];
+
+                for (var slot = _index.Touch((Side)side); slot != PriceIndex.None; slot = _index.Outward((Side)side, slot))
+                    quantities[slot] = 0;
+            }
+
+            _index.Clear();
         }
 
         private void RemoveAt(Side side, int slot)

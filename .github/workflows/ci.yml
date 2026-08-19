@@ -29,6 +29,11 @@ jobs:
           DOTNET_ROLL_FORWARD: Major
         run: dotnet test Tests/Tests.csproj -c Release --no-build --verbosity normal
 
+      - name: Real-data replay (20k-message NASDAQ slice)
+        env:
+          DOTNET_ROLL_FORWARD: Major
+        run: dotnet test Tests/Tests.csproj -c Release --no-build --filter "FullyQualifiedName~RealDataReplayTests"
+
       - name: Matching engine micro-benchmark (smoke)
         env:
           DOTNET_ROLL_FORWARD: Major

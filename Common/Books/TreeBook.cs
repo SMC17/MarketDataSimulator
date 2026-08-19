@@ -65,6 +65,9 @@ namespace MarketData.Common.Books
             return true;
         }
 
+        public bool TryGetQuantity(Side side, int price, out uint quantity)
+            => _quantities[(int)side].TryGetValue(price, out quantity);
+
         public bool Upsert(Side side, int price, uint quantity)
         {
             if (quantity == 0)
