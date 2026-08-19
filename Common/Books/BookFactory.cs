@@ -16,10 +16,11 @@ namespace MarketData.Common.Books
             return (implementation ?? Default).ToLowerInvariant() switch
             {
                 "sortedarray" or "array" => new SortedArrayBook(depth),
+                "vectorized" or "simd" => new VectorizedBook(depth),
                 "ladder" => new LadderBook(depth, -priceBand, priceBand),
                 "tree" => new TreeBook(depth),
                 _ => throw new ArgumentException(
-                    $"Unknown book implementation '{implementation}'. Expected SortedArray, Ladder or Tree.",
+                    $"Unknown book implementation '{implementation}'. Expected SortedArray, Vectorized, Ladder or Tree.",
                     nameof(implementation)),
             };
         }

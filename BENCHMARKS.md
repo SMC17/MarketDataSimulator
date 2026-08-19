@@ -101,10 +101,10 @@ latency is a function of how long the run lasted, not of how fast it is.
 
 | | |
 |---|---|
-| CPU | Intel Xeon @ 2.80GHz, 4 vCPU |
+| CPU | Intel Xeon @ 2.80GHz, 4 vCPU, AVX-512 (AVX2/AVX512F/BW/DQ/VL, BMI2) |
 | Memory | 15 GB |
 | OS | Ubuntu 24.04.4 LTS, kernel 6.18.5 |
-| Runtime | .NET 8.0.30 (projects target `net6.0`, run with roll-forward) |
+| Runtime | .NET 8.0.30, all projects target `net8.0` |
 | Build | Release, Server GC |
 | Transports | gRPC over HTTP/2 cleartext; UDP multicast on 239.7.7.7 — both over loopback |
 | Topology | server and load generator as separate processes on the same host |
@@ -312,6 +312,79 @@ for O(1) publishing you take on:
 
 ---
 
+## Validation against real NASDAQ market data
+
+Everything above measures speed. This measures whether the thing is *right*, against data
+this project did not produce.
+
+**Data.** A real AMZN session, 2012-06-21, from LOBSTER's reconstruction of the NASDAQ ITCH
+feed: 269,748 order events, and the exchange's own resulting order book after every one of
+them. 131,954 new limit orders, 123,458 deletions, 2,917 partial cancels, 8,974 visible
+executions, 2,445 hidden executions.
+
+**Result.** All four book implementations reproduce NASDAQ's published book **exactly on
+269,747 of 269,747 transitions** - 100.0000%.
+
+| Implementation | Transitions verified | Exact | Accuracy | Transitions/s |
+|---|---|---|---|---|
+| SortedArrayBook | 269,747 | 269,747 | **100.0000%** | 928,762 |
+| VectorizedBook | 269,747 | 269,747 | **100.0000%** | 954,719 |
+| LadderBook | 269,747 | 269,747 | **100.0000%** | 188,483 |
+| TreeBook | 269,747 | 269,747 | **100.0000%** | 222,698 |
+
+### Why it is a transition test, and not a replay
+
+The first attempt replayed the whole session cumulatively from a seeded book and matched
+0.04% of rows. That looks like a serious bug, so the first move was to rule the code out: an
+independent reconstruction written in Python agreed with the C# to the exact row count at
+every depth (5,585 / 4,002 / 3,066 / ... / 106 rows correct at depths 1 through 10). Two
+independent implementations agreeing that precisely do not share a bug - the experiment was
+wrong, not the code.
+
+The cause is a property of the data. **A LOBSTER level-10 message file contains only events
+that touch the top ten levels**; anything deeper is filtered out. Cumulative reconstruction is
+therefore impossible by construction, because the events that would maintain the deeper book
+are simply absent. The evidence is decisive: zero of 269,747 messages fell outside the
+published ten-level window, which is only possible if the file was filtered to it.
+
+So the test asks the question a feed handler actually has to answer: **given the book as it
+stands, does applying the next message produce the book the exchange publishes next?** Seeding
+from the reference before each message keeps transitions independent, making this a quarter of
+a million separate assertions rather than one trajectory that stops meaning anything after an
+early divergence.
+
+One slot of slack is left at the bottom of the window: a message that removes a level promotes
+an unknown eleventh level into view, so nine levels are compared rather than ten. Steps whose
+outcome a ten-level snapshot cannot determine are counted as unverifiable rather than scored -
+there were none.
+
+### What real data exposed that synthetic data could not
+
+**A performance bug.** `LadderBook.Clear` was a memset over the entire price band. At NASDAQ's
+$0.0001 tick granularity a ten-dollar band is 108,300 slots, so clearing cost roughly a
+megabyte of memset regardless of whether ten levels were resting. Invisible when a book is
+cleared once at startup; ruinous when cleared per message. Walking the occupancy index instead
+touches only live levels - **5.0x faster**. `SortedArrayBook` had the same shape of problem and
+is now constant-time to clear - **2.4x faster**.
+
+**A structural weakness of the ladder.** It remains the slowest here, and for a reason worth
+knowing: its bit-scan walks the price *band*, and a real book at $0.0001 granularity occupies
+about 0.02% of a ten-dollar band. Sparse real prices are exactly the case a synthetic benchmark
+with a tight band never produces.
+
+### Parser
+
+The LOBSTER CSV parser sustains **12.5M messages/sec at 496 MiB/s and allocates zero bytes**.
+Spans and hand-rolled integer parsing throughout - no strings, no substrings, no decoding.
+Delimiter search uses the runtime's vectorised `IndexOf`.
+
+Timestamps are parsed to integer nanoseconds rather than `double`. LOBSTER carries nine
+fractional digits; a `double` holds about fifteen significant decimal digits in total, so
+34200.123456789 is representable only barely and does not survive arithmetic. Integer
+nanoseconds are exact, and exactness is what lets two events be ordered confidently.
+
+---
+
 ## Order book micro-benchmark
 
 Three implementations of the same depth-limited book, each running the identical
@@ -355,6 +428,39 @@ Three results:
 
 For a depth-10 feed that publishes constantly, the array wins on both axes, and
 it is the configured default. Measurement chose it; asymptotics would not have.
+
+### The SIMD book, and why it is not the default
+
+`VectorizedBook` replaces the binary search with a branch-free vector count, on the theory that
+what actually costs a binary search at these sizes is not the comparisons but the branch
+mispredictions - each step depends on the last, and the predictor has nothing to work with on
+random prices. Two changes make that possible: prices move into their own contiguous `int[]`
+(struct of arrays), and bids are negated so both sides ascend and a price's position is simply
+the count of keys below it. Locating a price becomes one vector load, one compare, one mask
+extract, one population count, on 16 lanes at a time under AVX-512.
+
+| Depth | SortedArray | Vectorized | Ladder | Tree |
+|---|---|---|---|---|
+| 10 | **24.9** | 41.7 | 32.3 | 44.5 |
+| 32 | 32.7 | **21.9** | 17.9 | 62.6 |
+| 64 | 38.0 | **24.2** | 20.3 | 70.6 |
+| 1000 | 54.2 | **44.6** | 28.6 | 105.1 |
+
+Mixed operations, ns/op. It wins from roughly 32 levels up - and loses at depth 10, which is
+the depth this feed actually publishes.
+
+Two things cost it. A branch-free scan is O(n) where a binary search is O(log n), so the vector
+path is used only below a measured crossover of 64 levels and a binary search takes over above
+it; before that hybrid, depth 1000 cost 96.1 ns instead of 44.6. And struct-of-arrays has to be
+paid for twice - an insert shifts two arrays instead of one, and publishing has to re-interleave
+prices and quantities rather than issuing a single memory copy. That second cost fell from
+177 ns to 11 ns per publish once the sign was hoisted and the bounds checks eliminated, but it
+does not go away.
+
+So the fastest search does not win, because search is not what a depth-10 market data book
+spends its time on. `SortedArrayBook` stays the default. The interesting result is not that
+SIMD is fast; it is that it was measured, found to win only in a band this workload does not
+occupy, and left switchable rather than adopted.
 
 ---
 
