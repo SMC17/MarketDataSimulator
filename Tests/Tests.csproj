@@ -1,8 +1,9 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
 
     <IsPackable>false</IsPackable>
@@ -13,6 +14,14 @@
     <RollForward>Major</RollForward>
     <Nullable>disable</Nullable>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- A 20,000-message slice of the real NASDAQ session, so the replay test runs in CI without
+         network access. scripts/fetch-lobster.sh gets the full 269,748-message file. -->
+    <None Include="..\data\sample\*.gz" Link="data\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Common\Common.csproj" />

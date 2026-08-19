@@ -50,6 +50,15 @@ namespace MarketData.Common.Books
             return true;
         }
 
+        public bool TryGetQuantity(Side side, int price, out uint quantity)
+        {
+            var index = (int)side;
+            var position = Locate(side, _sides[index], _counts[index], price, out var exists);
+
+            quantity = exists ? _sides[index][position].Quantity : 0;
+            return exists;
+        }
+
         public bool Upsert(Side side, int price, uint quantity)
         {
             if (quantity == 0)
@@ -111,12 +120,15 @@ namespace MarketData.Common.Books
             return count;
         }
 
+        /// <summary>
+        /// Empties both sides in constant time. The arrays keep their contents, which is safe
+        /// because nothing ever reads past the live count - and wiping them would make clearing
+        /// cost the configured depth rather than nothing.
+        /// </summary>
         public void Clear()
         {
             _counts[0] = 0;
             _counts[1] = 0;
-            Array.Clear(_sides[0], 0, _sides[0].Length);
-            Array.Clear(_sides[1], 0, _sides[1].Length);
         }
 
         /// <summary>

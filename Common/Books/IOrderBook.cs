@@ -32,6 +32,16 @@ namespace MarketData.Common.Books
         bool TryGetBest(Side side, out PriceLevel level);
 
         /// <summary>
+        /// Resting size at one price, or zero when the level is absent.
+        /// </summary>
+        /// <remarks>
+        /// Needed to apply a feed that describes levels as signed deltas rather than absolute
+        /// sizes - which is how real exchange feeds express changes, and therefore how a
+        /// reconstruction has to consume them.
+        /// </remarks>
+        bool TryGetQuantity(Side side, int price, out uint quantity);
+
+        /// <summary>
         /// Inserts a level, or replaces the quantity of an existing one at the same price.
         /// </summary>
         /// <returns>
