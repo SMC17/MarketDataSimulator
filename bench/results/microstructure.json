@@ -1,0 +1,62 @@
+[
+  {
+    "BucketEvents": 10,
+    "Samples": 26974,
+    "ContemporaneousRSquared": 0.061473,
+    "ContemporaneousSlope": 0.19181747,
+    "ContemporaneousT": 42.03,
+    "PredictiveRSquared": 0.000594,
+    "PredictiveSlope": 0.01873805,
+    "PredictiveT": 4
+  },
+  {
+    "BucketEvents": 25,
+    "Samples": 10789,
+    "ContemporaneousRSquared": 0.084386,
+    "ContemporaneousSlope": 0.21641957,
+    "ContemporaneousT": 31.53,
+    "PredictiveRSquared": 0.003772,
+    "PredictiveSlope": 0.04545719,
+    "PredictiveT": 6.39
+  },
+  {
+    "BucketEvents": 50,
+    "Samples": 5394,
+    "ContemporaneousRSquared": 0.107889,
+    "ContemporaneousSlope": 0.24812905,
+    "ContemporaneousT": 25.54,
+    "PredictiveRSquared": 0.00871,
+    "PredictiveSlope": 0.07009147,
+    "PredictiveT": 6.88
+  },
+  {
+    "BucketEvents": 100,
+    "Samples": 2697,
+    "ContemporaneousRSquared": 0.146925,
+    "ContemporaneousSlope": 0.29498549,
+    "ContemporaneousT": 21.54,
+    "PredictiveRSquared": 0.007139,
+    "PredictiveSlope": 0.06434638,
+    "PredictiveT": 4.4
+  },
+  {
+    "BucketEvents": 250,
+    "Samples": 1078,
+    "ContemporaneousRSquared": 0.25557,
+    "ContemporaneousSlope": 0.43831732,
+    "ContemporaneousT": 19.22,
+    "PredictiveRSquared": 0.004448,
+    "PredictiveSlope": 0.05734953,
+    "PredictiveT": 2.19
+  },
+  {
+    "BucketEvents": 500,
+    "Samples": 539,
+    "ContemporaneousRSquared": 0.306636,
+    "ContemporaneousSlope": 0.45819751,
+    "ContemporaneousT": 15.41,
+    "PredictiveRSquared": 3E-05,
+    "PredictiveSlope": 0.00442794,
+    "PredictiveT": 0.13
+  }
+]
