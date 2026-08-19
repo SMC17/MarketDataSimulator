@@ -71,6 +71,13 @@ namespace MarketData.Tests
             // Sequences 1..5 never arrive.
             decoder.Consume(Packet(6, (FeedMessageType.Add, Side.Bid, -2, 100)));
 
+            // Held, not yet declared lost: at this instant loss is indistinguishable from
+            // reordering. The gap timer is what resolves it.
+            Assert.False(decoder.IsStale);
+            Assert.Equal(1, decoder.HeldPackets);
+
+            decoder.FlushGaps();
+
             Assert.True(decoder.IsStale);
             Assert.Equal(1, decoder.Statistics.Gaps);
             Assert.Equal(5, decoder.Statistics.MissedMessages);
@@ -87,12 +94,14 @@ namespace MarketData.Tests
 
             decoder.Consume(Packet(0, (FeedMessageType.Add, Side.Bid, -1, 100)));
             decoder.Consume(Packet(9, (FeedMessageType.Add, Side.Bid, -2, 100)));
+            decoder.FlushGaps();
 
             Assert.True(decoder.IsStale);
-            Assert.Equal(1, decoder.BookFor(Instrument).Count(Side.Bid)); // the -2 level was not applied
+            // The held packet is applied on resumption, but nothing further is trusted.
+            var afterGap = decoder.BookFor(Instrument).Count(Side.Bid);
 
             decoder.Consume(Packet(10, (FeedMessageType.Add, Side.Bid, -3, 100)));
-            Assert.Equal(1, decoder.BookFor(Instrument).Count(Side.Bid));
+            Assert.Equal(afterGap, decoder.BookFor(Instrument).Count(Side.Bid));
         }
 
         [Fact]
@@ -102,6 +111,7 @@ namespace MarketData.Tests
 
             decoder.Consume(Packet(0, (FeedMessageType.Add, Side.Bid, -1, 100)));
             decoder.Consume(Packet(50, (FeedMessageType.Add, Side.Bid, -2, 100)));
+            decoder.FlushGaps();
             Assert.True(decoder.IsStale);
 
             decoder.Consume(SnapshotPacket(51,
@@ -230,6 +240,10 @@ namespace MarketData.Tests
 
                         decoder.Consume(packet);
                     }
+
+                    // Resolve anything still held before judging: unflushed holds are neither
+                    // applied nor reported yet.
+                    decoder.FlushGaps();
 
                     if (decoder.IsStale)
                         return; // knows it cannot be trusted, which is the acceptable outcome
