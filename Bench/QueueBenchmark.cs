@@ -2,6 +2,7 @@ using MarketData.Common.Concurrency;
 using System;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Channels;
@@ -38,11 +39,14 @@ namespace MarketData.Bench
                 }
             }
 
-            Console.WriteLine($"Queue hand-off: {items:N0} items, capacity {capacity:N0}, best of {trials}");
+            if (items <= 0 || capacity <= 0 || trials < 3)
+                throw new ArgumentOutOfRangeException(nameof(args));
+
+            Console.WriteLine($"Queue hand-off: {items:N0} items, capacity {capacity:N0}, median of {trials}");
             Console.WriteLine($"Cores: {Environment.ProcessorCount}, server GC: {System.Runtime.GCSettings.IsServerGC}");
             Console.WriteLine();
-            Console.WriteLine($"{"Queue",34} {"ns/item",10} {"M items/s",12} {"B/item",9}");
-            Console.WriteLine(new string('-', 70));
+            Console.WriteLine($"{"Queue",34} {"median ns",10} {"min ns",9} {"max ns",9} {"M items/s",12} {"B/item",9}");
+            Console.WriteLine(new string('-', 91));
 
             var results = new[]
             {
@@ -55,20 +59,26 @@ namespace MarketData.Bench
 
             foreach (var result in results)
             {
-                Console.WriteLine($"{result.Name,34} {result.NanosecondsPerItem,10:F1} " +
-                                  $"{items / result.Seconds / 1_000_000,12:F2} {result.BytesPerItem,9:F2}");
+                Console.WriteLine($"{result.Name,34} {result.MedianNanosecondsPerItem,10:F1} " +
+                                  $"{result.MinNanosecondsPerItem,9:F1} {result.MaxNanosecondsPerItem,9:F1} " +
+                                  $"{items / result.MedianSeconds / 1_000_000,12:F2} {result.BytesPerItem,9:F3}");
             }
 
             Console.WriteLine();
 
             var ring = Array.Find(results, r => r.Name.StartsWith("RingBuffer (producer"));
             var channel = Array.Find(results, r => r.Name.StartsWith("Channel (producer"));
-            Console.WriteLine($"Concurrent hand-off: ring is {channel.NanosecondsPerItem / ring.NanosecondsPerItem:F2}x the channel's throughput.");
+            Console.WriteLine($"Concurrent hand-off: ring is " +
+                $"{channel.MedianNanosecondsPerItem / ring.MedianNanosecondsPerItem:F2}x the channel's throughput.");
 
             if (outputPath is not null)
             {
                 System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(outputPath)));
-                System.IO.File.WriteAllText(outputPath, JsonSerializer.Serialize(results,
+                var report = new QueueReport(DateTimeOffset.UtcNow,
+                    RuntimeInformation.FrameworkDescription, RuntimeInformation.OSDescription,
+                    RuntimeInformation.ProcessArchitecture.ToString(), Environment.ProcessorCount,
+                    System.Runtime.GCSettings.IsServerGC, items, capacity, trials, results);
+                System.IO.File.WriteAllText(outputPath, JsonSerializer.Serialize(report,
                     new JsonSerializerOptions { WriteIndented = true }));
                 Console.WriteLine($"Wrote {outputPath}");
             }
@@ -80,8 +90,9 @@ namespace MarketData.Bench
         {
             body(); // warm up JIT and let the thread pool settle
 
-            var best = double.MaxValue;
-            long bytes = 0;
+            var seconds = new double[trials];
+            var nanoseconds = new double[trials];
+            var bytes = new double[trials];
 
             for (var trial = 0; trial < trials; trial++)
             {
@@ -91,14 +102,22 @@ namespace MarketData.Bench
                 var elapsed = (Stopwatch.GetTimestamp() - started) / (double)Stopwatch.Frequency;
                 var allocated = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
 
-                if (elapsed < best)
-                {
-                    best = elapsed;
-                    bytes = count == 0 ? 0 : allocated / count;
-                }
+                seconds[trial] = elapsed;
+                nanoseconds[trial] = count == 0 ? 0 : elapsed * 1e9 / count;
+                bytes[trial] = count == 0 ? 0 : allocated / (double)count;
             }
 
-            return new Result(name, Math.Round(best, 6), Math.Round(best * 1e9 / 5_000_000, 2), bytes);
+            Array.Sort(seconds);
+            Array.Sort(nanoseconds);
+            Array.Sort(bytes);
+            var middle = trials / 2;
+
+            return new Result(name,
+                Math.Round(seconds[middle], 6),
+                Math.Round(nanoseconds[middle], 2),
+                Math.Round(nanoseconds[0], 2),
+                Math.Round(nanoseconds[^1], 2),
+                Math.Round(bytes[middle], 4));
         }
 
         private static long RingSingleThreaded(int items, int capacity)
@@ -219,6 +238,11 @@ namespace MarketData.Bench
             return items;
         }
 
-        private record Result(string Name, double Seconds, double NanosecondsPerItem, long BytesPerItem);
+        private record Result(string Name, double MedianSeconds, double MedianNanosecondsPerItem,
+            double MinNanosecondsPerItem, double MaxNanosecondsPerItem, double BytesPerItem);
+
+        private sealed record QueueReport(DateTimeOffset TimestampUtc, string Runtime,
+            string OperatingSystem, string Architecture, int LogicalProcessors, bool ServerGc,
+            int Items, int Capacity, int Trials, Result[] Results);
     }
 }

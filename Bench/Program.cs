@@ -33,6 +33,9 @@ if (args.Length > 0 && args[0] == "matching")
 if (args.Length > 0 && args[0] == "multicast")
     Environment.Exit(MulticastBenchmark.Run(args.Skip(1).ToArray()));
 
+if (args.Length > 0 && args[0] == "protocol")
+    Environment.Exit(ProtocolBenchmark.Run(args.Skip(1).ToArray()));
+
 var options = BenchOptions.Parse(args);
 
 // Client and server share this host's monotonic clock, so the server's Stopwatch timestamp can be

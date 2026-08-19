@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 
 namespace MarketData.Common.Lobster
@@ -31,22 +32,55 @@ namespace MarketData.Common.Lobster
 
             var sessions = new List<LobsterSession>();
 
-            foreach (var messagePath in Directory.GetFiles(directory, "*_message_*.csv").OrderBy(p => p))
+            foreach (var messagePath in Directory.GetFiles(directory, "*_message_*.csv*").OrderBy(p => p))
             {
+                if (!messagePath.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) &&
+                    !messagePath.EndsWith(".csv.gz", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 var referencePath = messagePath.Replace("_message_", "_orderbook_");
 
                 if (!File.Exists(referencePath))
                     continue;
 
-                var parts = Path.GetFileNameWithoutExtension(messagePath).Split('_');
+                var filename = Path.GetFileNameWithoutExtension(messagePath);
 
-                if (parts.Length < 6 || !int.TryParse(parts[^1], out var levels))
-                    continue;
+                if (filename.EndsWith(".csv", StringComparison.OrdinalIgnoreCase))
+                    filename = Path.GetFileNameWithoutExtension(filename);
 
-                sessions.Add(new LobsterSession(parts[0], parts[1], levels, messagePath, referencePath));
+                var parts = filename.Split('_');
+                string date;
+                int levels;
+
+                if (parts.Length >= 6 && int.TryParse(parts[^1], out levels))
+                {
+                    date = parts[1];
+                }
+                else
+                {
+                    levels = LobsterReplay.DetectLevels(ReadAllBytes(referencePath));
+                    date = "sample";
+
+                    if (levels == 0)
+                        continue;
+                }
+
+                sessions.Add(new LobsterSession(parts[0], date, levels, messagePath, referencePath));
             }
 
             return sessions;
+        }
+
+        public static byte[] ReadAllBytes(string path)
+        {
+            if (!path.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
+                return File.ReadAllBytes(path);
+
+            using var file = File.OpenRead(path);
+            using var gzip = new GZipStream(file, CompressionMode.Decompress);
+            using var output = new MemoryStream();
+            gzip.CopyTo(output);
+            return output.ToArray();
         }
     }
 }

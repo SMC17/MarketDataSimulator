@@ -1,4 +1,3 @@
-using System;
 using System.Buffers.Binary;
 using MarketData.Common.Books;
 
@@ -14,72 +13,119 @@ namespace MarketData.Common.Feed
         Heartbeat = 5,
     }
 
-    /// <summary>
-    /// Wire format for the multicast feed: a sequenced packet header followed by one or more
-    /// messages.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Hand-rolled and fixed-layout rather than a general-purpose serialiser. Every field is at a
-    /// known offset, so encoding is a handful of stores into a caller-supplied span and decoding
-    /// is a handful of loads - no reflection, no schema walk, no allocation on either side. On a
-    /// path that runs once per update per packet, that matters more than flexibility.
-    /// </para>
-    /// <para>
-    /// Explicitly little-endian via <see cref="BinaryPrimitives"/> rather than whatever the host
-    /// happens to be. A wire format that silently depends on the sender's byte order works
-    /// perfectly until the day it does not.
-    /// </para>
-    /// <para>
-    /// Packets are capped below the Ethernet MTU. An IP-fragmented datagram is lost in its
-    /// entirety if any single fragment is dropped, which converts a small loss probability into a
-    /// larger one for no benefit; batching stops short of the fragmentation threshold instead.
-    /// </para>
-    /// </remarks>
+    public enum FeedProtocolError : byte
+    {
+        None = 0,
+        Truncated,
+        Magic,
+        Version,
+        Flags,
+        MessageCount,
+        PacketLength,
+        SequenceOverflow,
+        Checksum,
+    }
+
+    public readonly record struct FeedHeader(
+        ushort MessageCount,
+        ushort PacketLength,
+        ulong SessionId,
+        ulong FirstSequence,
+        long SourceTimestamp);
+
+    /// <summary>Versioned, sequenced, integrity-checked multicast wire format.</summary>
     public static class FeedProtocol
     {
         public const byte Magic = 0x4D;
-        public const byte Version = 1;
-
-        /// <summary>Magic, version, message count, first sequence, source timestamp.</summary>
-        public const int HeaderSize = 20;
-
-        /// <summary>Type, instrument, price, quantity, side.</summary>
+        public const byte Version = 2;
+        public const int HeaderSize = 36;
         public const int IncrementalSize = 14;
-
-        /// <summary>
-        /// Chosen to sit under a 1500-byte Ethernet MTU once IP and UDP headers are accounted for,
-        /// so a packet is never fragmented.
-        /// </summary>
         public const int MaxPacketSize = 1400;
+        public const int MaxSnapshotLevels = (MaxPacketSize - HeaderSize - 7) / 8;
 
-        public static void WriteHeader(Span<byte> buffer, ushort messageCount, ulong firstSequence, long sourceTimestamp)
+        public const int ChecksumOffset = 32;
+
+        /// <summary>Completes a packet after its payload has been encoded.</summary>
+        public static void WriteHeader(Span<byte> packet, ushort messageCount, ulong sessionId,
+            ulong firstSequence, long sourceTimestamp)
         {
-            buffer[0] = Magic;
-            buffer[1] = Version;
-            BinaryPrimitives.WriteUInt16LittleEndian(buffer.Slice(2, 2), messageCount);
-            BinaryPrimitives.WriteUInt64LittleEndian(buffer.Slice(4, 8), firstSequence);
-            BinaryPrimitives.WriteInt64LittleEndian(buffer.Slice(12, 8), sourceTimestamp);
+            if (packet.Length < HeaderSize || packet.Length > MaxPacketSize)
+                throw new ArgumentOutOfRangeException(nameof(packet));
+            if (messageCount == 0)
+                throw new ArgumentOutOfRangeException(nameof(messageCount));
+            if (sessionId == 0)
+                throw new ArgumentOutOfRangeException(nameof(sessionId));
+            if (firstSequence > ulong.MaxValue - messageCount)
+                throw new ArgumentOutOfRangeException(nameof(firstSequence));
+
+            packet[0] = Magic;
+            packet[1] = Version;
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.Slice(2, 2), 0);
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.Slice(4, 2), messageCount);
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.Slice(6, 2), checked((ushort)packet.Length));
+            BinaryPrimitives.WriteUInt64LittleEndian(packet.Slice(8, 8), sessionId);
+            BinaryPrimitives.WriteUInt64LittleEndian(packet.Slice(16, 8), firstSequence);
+            BinaryPrimitives.WriteInt64LittleEndian(packet.Slice(24, 8), sourceTimestamp);
+            BinaryPrimitives.WriteUInt32LittleEndian(packet.Slice(ChecksumOffset, 4),
+                Crc32C.Compute(packet.Slice(0, ChecksumOffset), packet.Slice(HeaderSize)));
         }
 
-        public static bool TryReadHeader(ReadOnlySpan<byte> buffer,
-            out ushort messageCount, out ulong firstSequence, out long sourceTimestamp)
+        public static bool TryReadHeader(ReadOnlySpan<byte> packet, out FeedHeader header,
+            out FeedProtocolError error)
         {
-            messageCount = 0;
-            firstSequence = 0;
-            sourceTimestamp = 0;
+            header = default;
 
-            if (buffer.Length < HeaderSize || buffer[0] != Magic || buffer[1] != Version)
-                return false;
+            if (packet.Length < HeaderSize)
+                return Fail(FeedProtocolError.Truncated, out error);
+            if (packet.Length > MaxPacketSize)
+                return Fail(FeedProtocolError.PacketLength, out error);
+            if (packet[0] != Magic)
+                return Fail(FeedProtocolError.Magic, out error);
+            if (packet[1] != Version)
+                return Fail(FeedProtocolError.Version, out error);
+            if (BinaryPrimitives.ReadUInt16LittleEndian(packet.Slice(2, 2)) != 0)
+                return Fail(FeedProtocolError.Flags, out error);
 
-            messageCount = BinaryPrimitives.ReadUInt16LittleEndian(buffer.Slice(2, 2));
-            firstSequence = BinaryPrimitives.ReadUInt64LittleEndian(buffer.Slice(4, 8));
-            sourceTimestamp = BinaryPrimitives.ReadInt64LittleEndian(buffer.Slice(12, 8));
+            var count = BinaryPrimitives.ReadUInt16LittleEndian(packet.Slice(4, 2));
+            var declaredLength = BinaryPrimitives.ReadUInt16LittleEndian(packet.Slice(6, 2));
+            var session = BinaryPrimitives.ReadUInt64LittleEndian(packet.Slice(8, 8));
+            var sequence = BinaryPrimitives.ReadUInt64LittleEndian(packet.Slice(16, 8));
+
+            if (count == 0 || session == 0)
+                return Fail(FeedProtocolError.MessageCount, out error);
+            if (declaredLength != packet.Length)
+                return Fail(FeedProtocolError.PacketLength, out error);
+            if (sequence > ulong.MaxValue - count)
+                return Fail(FeedProtocolError.SequenceOverflow, out error);
+
+            var expectedChecksum = BinaryPrimitives.ReadUInt32LittleEndian(packet.Slice(ChecksumOffset, 4));
+            var actualChecksum = Crc32C.Compute(packet.Slice(0, ChecksumOffset), packet.Slice(HeaderSize));
+
+            if (actualChecksum != expectedChecksum)
+                return Fail(FeedProtocolError.Checksum, out error);
+
+            header = new FeedHeader(count, declaredLength, session, sequence,
+                BinaryPrimitives.ReadInt64LittleEndian(packet.Slice(24, 8)));
+            error = FeedProtocolError.None;
             return true;
         }
 
-        public static int WriteIncremental(Span<byte> buffer, FeedMessageType type, int instrumentId, Side side, PriceLevel level)
+        private static bool Fail(FeedProtocolError value, out FeedProtocolError error)
         {
+            error = value;
+            return false;
+        }
+
+        public static int WriteIncremental(Span<byte> buffer, FeedMessageType type, int instrumentId,
+            Side side, PriceLevel level)
+        {
+            if (buffer.Length < IncrementalSize)
+                throw new ArgumentException("destination is too small", nameof(buffer));
+            if (type is not (FeedMessageType.Add or FeedMessageType.Replace or FeedMessageType.Remove))
+                throw new ArgumentOutOfRangeException(nameof(type));
+            if (side is not (Side.Bid or Side.Ask))
+                throw new ArgumentOutOfRangeException(nameof(side));
+
             buffer[0] = (byte)type;
             BinaryPrimitives.WriteInt32LittleEndian(buffer.Slice(1, 4), instrumentId);
             BinaryPrimitives.WriteInt32LittleEndian(buffer.Slice(5, 4), level.Price);
@@ -88,8 +134,8 @@ namespace MarketData.Common.Feed
             return IncrementalSize;
         }
 
-        public static int ReadIncremental(ReadOnlySpan<byte> buffer,
-            out FeedMessageType type, out int instrumentId, out Side side, out PriceLevel level)
+        public static int ReadIncremental(ReadOnlySpan<byte> buffer, out FeedMessageType type,
+            out int instrumentId, out Side side, out PriceLevel level)
         {
             type = (FeedMessageType)buffer[0];
             instrumentId = BinaryPrimitives.ReadInt32LittleEndian(buffer.Slice(1, 4));
@@ -100,11 +146,20 @@ namespace MarketData.Common.Feed
             return IncrementalSize;
         }
 
-        public static int SnapshotSize(int bidCount, int askCount) => 7 + (bidCount + askCount) * 8;
+        public static int SnapshotSize(int bidCount, int askCount)
+        {
+            ValidateSnapshotCounts(bidCount, askCount);
+            return 7 + checked((bidCount + askCount) * 8);
+        }
 
         public static int WriteSnapshot(Span<byte> buffer, int instrumentId,
             ReadOnlySpan<PriceLevel> bids, ReadOnlySpan<PriceLevel> asks)
         {
+            var size = SnapshotSize(bids.Length, asks.Length);
+
+            if (buffer.Length < size)
+                throw new ArgumentException("destination is too small", nameof(buffer));
+
             buffer[0] = (byte)FeedMessageType.Snapshot;
             BinaryPrimitives.WriteInt32LittleEndian(buffer.Slice(1, 4), instrumentId);
             buffer[5] = (byte)bids.Length;
@@ -114,6 +169,17 @@ namespace MarketData.Common.Feed
             offset += WriteLevels(buffer.Slice(offset), bids);
             offset += WriteLevels(buffer.Slice(offset), asks);
             return offset;
+        }
+
+        private static void ValidateSnapshotCounts(int bidCount, int askCount)
+        {
+            if ((uint)bidCount > byte.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(bidCount));
+            if ((uint)askCount > byte.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(askCount));
+            if (bidCount + askCount > MaxSnapshotLevels)
+                throw new ArgumentOutOfRangeException(nameof(bidCount),
+                    $"a snapshot may contain at most {MaxSnapshotLevels} total levels");
         }
 
         private static int WriteLevels(Span<byte> buffer, ReadOnlySpan<PriceLevel> levels)
@@ -161,19 +227,37 @@ namespace MarketData.Common.Feed
             return offset;
         }
 
-        /// <summary>Length of the message beginning at <paramref name="buffer"/>, or -1 if malformed.</summary>
+        /// <summary>Length of one valid message, or -1 when it is malformed.</summary>
         public static int MessageLength(ReadOnlySpan<byte> buffer)
         {
             if (buffer.Length < 1)
                 return -1;
 
-            return (FeedMessageType)buffer[0] switch
+            switch ((FeedMessageType)buffer[0])
             {
-                FeedMessageType.Add or FeedMessageType.Replace or FeedMessageType.Remove => IncrementalSize,
-                FeedMessageType.Heartbeat => 1,
-                FeedMessageType.Snapshot when buffer.Length >= 7 => SnapshotSize(buffer[5], buffer[6]),
-                _ => -1,
-            };
+                case FeedMessageType.Add:
+                case FeedMessageType.Replace:
+                case FeedMessageType.Remove:
+                    if (buffer.Length < IncrementalSize || buffer[13] > (byte)Side.Ask)
+                        return -1;
+                    return IncrementalSize;
+
+                case FeedMessageType.Heartbeat:
+                    return 1;
+
+                case FeedMessageType.Snapshot:
+                    if (buffer.Length < 7)
+                        return -1;
+
+                    var total = buffer[5] + buffer[6];
+                    if (total > MaxSnapshotLevels)
+                        return -1;
+
+                    return 7 + total * 8;
+
+                default:
+                    return -1;
+            }
         }
     }
 }

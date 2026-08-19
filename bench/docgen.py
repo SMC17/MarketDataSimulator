@@ -145,17 +145,14 @@ def environment():
     return table(["", ""], rows)
 
 
-def assert_one_host():
-    """Refuses to render a document from results measured on more than one host.
+def assert_one_host_per_generation():
+    """Refuses to mix hosts inside one benchmark generation.
 
-    The benchmark host here is a container that can be replaced between phases of
-    a session. Nothing in a results file makes that visible after the fact, so a
-    document can end up quoting two machines as one - which is not a hypothetical
-    failure, it is what an earlier revision of BENCHMARKS.md did. Every run records
-    the kernel instance it executed on; if they disagree, the right answer is to
-    re-measure, not to publish the mixture.
+    Protocol-v2 artifacts and the archived pre-v2 transport sweep are deliberately
+    separate records. Each generation must come from one kernel instance, but the
+    archive need not be re-measured merely because the current protocol changed.
     """
-    seen = {}
+    seen = {"v2": {}, "legacy": {}}
 
     for path in glob.glob(str(RESULTS / "*.json")):
         with open(path) as handle:
@@ -169,13 +166,18 @@ def assert_one_host():
 
         boot = data.get("HostBootId") or data.get("BootId")
         if boot:
-            seen.setdefault(boot, []).append(Path(path).name)
+            name = Path(path).name
+            generation = "v2" if "v2" in name else "legacy"
+            seen[generation].setdefault(boot, []).append(name)
 
-    if len(seen) > 1:
-        lines = ["results were measured on more than one host:"]
-        for boot, files in sorted(seen.items(), key=lambda item: -len(item[1])):
-            lines.append(f"  {boot}: {len(files)} file(s), e.g. {', '.join(sorted(files)[:3])}")
-        lines.append("re-measure on a single host rather than publishing the mixture")
+    mixed = {generation: boots for generation, boots in seen.items() if len(boots) > 1}
+    if mixed:
+        lines = ["a benchmark generation contains results from multiple hosts:"]
+        for generation, boots in mixed.items():
+            lines.append(f"  {generation}:")
+            for boot, files in sorted(boots.items(), key=lambda item: -len(item[1])):
+                lines.append(f"    {boot}: {len(files)} file(s), e.g. {', '.join(sorted(files)[:3])}")
+        lines.append("re-measure that generation on one host rather than publishing a mixture")
         raise MissingResults("\n".join(lines))
 
 
@@ -186,6 +188,132 @@ def table(header, rows):
 
 
 # ----------------------------------------------------------------- regions
+
+def measurement(value):
+    """Returns a v2 benchmark measurement's median, accepting scalar legacy values."""
+    return value["Median"] if isinstance(value, dict) else value
+
+
+def v2_environment():
+    data = load("protocol-v2.json")
+    rows = [
+        ["Runtime", f"{data['Runtime']}, Release, {'Server' if data['ServerGc'] else 'Workstation'} GC"],
+        ["OS / architecture", f"{data['OperatingSystem']}, {data['Architecture']}"],
+        ["Logical processors", f"{data['LogicalProcessors']:,}"],
+        ["Monotonic clock", f"{data['StopwatchFrequency'] / 1_000_000:.0f} MHz"],
+        ["CRC-32C", f"{data['Crc32CImplementation']} ({'hardware' if data['HardwareAccelerated'] else 'software'})"],
+    ]
+    return table(["Property", "Recorded value"], rows)
+
+
+def v2_protocol():
+    rows = []
+    for row in load("protocol-v2.json")["Results"]:
+        rows.append([
+            row["Name"], f"{row['PacketBytes']:,} B",
+            f"{row['MedianNanoseconds']:.1f} ns",
+            f"{row['MinNanoseconds']:.1f}–{row['MaxNanoseconds']:.1f} ns",
+            f"{row['MillionOperationsPerSecond']:.2f} M/s",
+            f"{row['BytesAllocatedPerOperation']:.0f} B/op",
+        ])
+    return table(["Case", "Packet", "Median", "Min–max", "Rate", "Allocation"], rows)
+
+
+def v2_matching():
+    rows = []
+    for row in load("matching-v2.json")["Results"]:
+        values = []
+        for key in ("AddCancelCycleNs", "CancelAddCycleNs", "MatchReplenishCycleNs"):
+            value = row[key]
+            values.append(f"{measurement(value):.1f} ns")
+        rows.append([f"{row['RestingOrders']:,}", *values])
+    return table(["Resting orders", "Add + cancel", "Cancel + add", "Match + replenish"], rows)
+
+
+def v2_books():
+    rows = []
+    for row in load("books-v2.json")["Results"]:
+        rows.append([
+            f"{row['Depth']:,}", row["Implementation"],
+            f"{measurement(row['MixedNsPerOp']):.1f}",
+            f"{measurement(row['TouchNsPerOp']):.1f}",
+            f"{measurement(row['SnapshotNsPerOp']):.1f}",
+            f"{measurement(row['ClearNsPerOp']):.1f}",
+            f"{row['SnapshotBytesPerOp']:.0f}",
+        ])
+    return table(["Depth", "Implementation", "Mixed ns/op", "Touch ns/op",
+                  "Top-10 ns/op", "Clear ns/op", "Publish B/op"], rows)
+
+
+def v2_queue():
+    rows = []
+    for row in load("queue-v2.json")["Results"]:
+        rows.append([
+            row["Name"], f"{row['MedianNanosecondsPerItem']:.1f} ns/item",
+            f"{row['MinNanosecondsPerItem']:.1f}–{row['MaxNanosecondsPerItem']:.1f}",
+            f"{1000 / row['MedianNanosecondsPerItem']:.1f} M item/s",
+            f"{row['BytesPerItem']:.3f} B/item",
+        ])
+    return table(["Queue", "Median", "Min–max", "Throughput", "Allocation"], rows)
+
+
+def v2_replay():
+    rows = []
+    paths = sorted(glob.glob(str(RESULTS / "replay-sample-v2-*.json")))
+    if not paths:
+        raise MissingResults("no replay-sample-v2-*.json in bench/results/")
+    for path in paths:
+        data = json.load(open(path))
+        for entry in data["Transitions"]:
+            rows.append([
+                data["Symbol"], str(data["Levels"]), entry["Implementation"],
+                f"{entry['RowsCompared']:,}", f"{entry['RowsMatched']:,}",
+                f"{entry['MatchRate'] * 100:.4f}%", f"{entry['MessagesPerSecond']:,.0f}",
+            ])
+    return table(["Symbol", "Depth", "Book", "Transitions", "Exact", "Accuracy", "Msg/s"], rows)
+
+
+def v2_multicast():
+    rows = []
+    for row in load("protocolv2-summary.json"):
+        rows.append([
+            f"{row['Subscribers']:,}", f"{row['MessagesPerSecond']:,.0f}",
+            f"{row['MessagesPerSecondPerSubscriber']:,.0f}", f"{row['MeanMs']:.3f} ms",
+            f"{row['P50Ms']:.3f} ms", f"{row['P99Ms']:.3f} ms",
+            f"{row['Gaps']} / {row['IntegrityFailures']} / {row['LineDivergences']} / {row['StaleSubscribers']}",
+        ])
+    return table(["Subscribers", "Delivered msg/s", "Per subscriber", "Mean", "p50", "p99",
+                  "Gaps / CRC / divergence / stale"], rows)
+
+
+def v2_headline():
+    protocol = next(r for r in load("protocol-v2.json")["Results"]
+                    if r["Name"] == "encode + decode + apply")
+    queue_row = next(r for r in load("queue-v2.json")["Results"]
+                     if r["Name"].startswith("RingBuffer batched"))
+    matching_row = max(load("matching-v2.json")["Results"], key=lambda r: r["RestingOrders"])
+    replay_files = sorted(glob.glob(str(RESULTS / "replay-sample-v2-*.json")))
+    transitions = 0
+    exact = True
+    for path in replay_files:
+        data = json.load(open(path))
+        transitions += data["Transitions"][0]["RowsCompared"]
+        exact = exact and all(r["RowsMatched"] == r["RowsCompared"] for r in data["Transitions"])
+    multicast = max(load("protocolv2-summary.json"), key=lambda r: r["Subscribers"])
+    rows = [
+        ["Feed encode → apply", f"{protocol['MedianNanoseconds']:.1f} ns median",
+         f"{protocol['BytesAllocatedPerOperation']:.0f} B/op"],
+        ["Batched SPSC hand-off", f"{queue_row['MedianNanosecondsPerItem']:.1f} ns/item median",
+         f"{queue_row['BytesPerItem']:.3f} B/item including harness setup"],
+        [f"Matching at {matching_row['RestingOrders']:,} resting orders",
+         f"{measurement(matching_row['MatchReplenishCycleNs']):.1f} ns/cycle median", "state preserving"],
+        ["Committed NASDAQ samples", f"{transitions:,} transitions per implementation",
+         "exact" if exact else "mismatch present"],
+        [f"Loopback multicast, {multicast['Subscribers']:,} subscribers",
+         f"{multicast['MessagesPerSecond']:,.0f} delivered msg/s",
+         f"{multicast['Gaps']} gaps; {multicast['IntegrityFailures']} CRC failures"],
+    ]
+    return table(["Path", "Recorded result", "Contract"], rows)
 
 def books_full():
     by_depth = {}
@@ -586,6 +714,14 @@ def repeatability():
 
 
 REGIONS = {
+    "v2-environment": v2_environment,
+    "v2-protocol": v2_protocol,
+    "v2-matching": v2_matching,
+    "v2-books": v2_books,
+    "v2-queue": v2_queue,
+    "v2-replay": v2_replay,
+    "v2-multicast": v2_multicast,
+    "v2-headline": v2_headline,
     "books-full": books_full,
     "books-summary": books_summary,
     "matching": matching,
@@ -644,7 +780,7 @@ def main():
     failed = False
 
     try:
-        assert_one_host()
+        assert_one_host_per_generation()
     except MissingResults as mixed:
         print(mixed, file=sys.stderr)
         sys.exit(1)

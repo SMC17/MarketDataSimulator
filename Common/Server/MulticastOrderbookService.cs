@@ -1,6 +1,7 @@
 using MarketData.Common.Books;
 using MarketData.Common.Feed;
 using System;
+using System.Diagnostics;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
@@ -28,9 +29,11 @@ namespace MarketData.Common.Server
     public sealed class MulticastOrderbookService : IOrderbookService
     {
         public MulticastOrderbookService(IPAddress group, int port, IPAddress @interface,
-            int maxBatch, TimeSpan flushInterval, TimeSpan snapshotInterval, IOrderbookManager manager)
+            int maxBatch, TimeSpan flushInterval, TimeSpan snapshotInterval, IOrderbookManager manager,
+            IPAddress redundantGroup = null, int redundantPort = 0)
         {
-            _publisher = new MulticastPublisher(group, port, @interface, maxBatch);
+            _publisher = new MulticastPublisher(group, port, @interface, maxBatch,
+                redundantGroup, redundantPort);
             _flushInterval = flushInterval;
             _snapshotInterval = snapshotInterval;
             _manager = manager;
@@ -103,7 +106,7 @@ namespace MarketData.Common.Server
         /// </remarks>
         private async Task PumpAsync(CancellationToken token)
         {
-            var lastSnapshot = DateTime.UtcNow;
+            var lastSnapshot = Stopwatch.GetTimestamp();
 
             while (!token.IsCancellationRequested)
             {
@@ -115,9 +118,10 @@ namespace MarketData.Common.Server
                     if (_flushInterval > TimeSpan.Zero)
                         _publisher.Flush();
 
-                    if (_snapshotInterval > TimeSpan.Zero && DateTime.UtcNow - lastSnapshot >= _snapshotInterval)
+                    if (_snapshotInterval > TimeSpan.Zero &&
+                        Stopwatch.GetElapsedTime(lastSnapshot) >= _snapshotInterval)
                     {
-                        lastSnapshot = DateTime.UtcNow;
+                        lastSnapshot = Stopwatch.GetTimestamp();
                         RepublishSnapshots();
                     }
                 }
@@ -164,7 +168,7 @@ namespace MarketData.Common.Server
                 DisseminatedUpdates: _publisher.MessagesSent,
                 SentMessages: _publisher.PacketsSent,
                 DroppedUpdates: 0,
-                FailedSends: 0,
+                FailedSends: _publisher.SendFailures,
                 OutboundQueued: 0,
                 MaxOutboundQueued: 0);
 

@@ -1,0 +1,71 @@
+{
+  "TimestampUtc": "2026-08-19T17:07:24.1819282+00:00",
+  "ProtocolVersion": 2,
+  "Crc32CImplementation": "SSE4.2",
+  "HardwareAccelerated": true,
+  "Runtime": ".NET 8.0.30",
+  "OperatingSystem": "Ubuntu 24.04.3 LTS",
+  "Architecture": "X64",
+  "LogicalProcessors": 8,
+  "ServerGc": true,
+  "StopwatchFrequency": 1000000000,
+  "BaseIterations": 1000000,
+  "Trials": 7,
+  "Results": [
+    {
+      "Name": "seal incremental",
+      "PacketBytes": 50,
+      "Iterations": 1000000,
+      "MedianNanoseconds": 27.66,
+      "MinNanoseconds": 26.18,
+      "MaxNanoseconds": 72.66,
+      "MillionOperationsPerSecond": 36.153,
+      "GibibytesPerSecond": 1.684,
+      "BytesAllocatedPerOperation": 0
+    },
+    {
+      "Name": "validate incremental",
+      "PacketBytes": 50,
+      "Iterations": 1000000,
+      "MedianNanoseconds": 18.64,
+      "MinNanoseconds": 18.42,
+      "MaxNanoseconds": 21.21,
+      "MillionOperationsPerSecond": 53.65,
+      "GibibytesPerSecond": 2.498,
+      "BytesAllocatedPerOperation": 0
+    },
+    {
+      "Name": "validate max batch",
+      "PacketBytes": 1394,
+      "Iterations": 125000,
+      "MedianNanoseconds": 579.83,
+      "MinNanoseconds": 572.86,
+      "MaxNanoseconds": 822.73,
+      "MillionOperationsPerSecond": 1.725,
+      "GibibytesPerSecond": 2.239,
+      "BytesAllocatedPerOperation": 0
+    },
+    {
+      "Name": "validate max snapshot",
+      "PacketBytes": 1395,
+      "Iterations": 125000,
+      "MedianNanoseconds": 204.11,
+      "MinNanoseconds": 203.23,
+      "MaxNanoseconds": 229.97,
+      "MillionOperationsPerSecond": 4.899,
+      "GibibytesPerSecond": 6.365,
+      "BytesAllocatedPerOperation": 0
+    },
+    {
+      "Name": "encode \u002B decode \u002B apply",
+      "PacketBytes": 50,
+      "Iterations": 1000000,
+      "MedianNanoseconds": 121.84,
+      "MinNanoseconds": 121.11,
+      "MaxNanoseconds": 354.29,
+      "MillionOperationsPerSecond": 8.207,
+      "GibibytesPerSecond": 0.382,
+      "BytesAllocatedPerOperation": 0
+    }
+  ]
+}

@@ -13,21 +13,17 @@ namespace MarketData.Server
     /// <summary>
     /// Drives one instrument's book and publishes the resulting updates.
     /// </summary>
-    /// <remarks>
-    /// Book state lives in an <see cref="IOrderBook"/>; this type only decides what happens next
-    /// and turns the result into a wire update. Keeping the two apart is what lets the book
-    /// implementations be swapped and compared without touching the simulation, and lets the
-    /// simulation be tested without a network.
-    /// </remarks>
     internal sealed class Orderbook : IDisposable
     {
-        public Orderbook(Instrument instrument, IUpdateProducer producer, string bookImplementation, int priceBand)
+        public Orderbook(Instrument instrument, IUpdateProducer producer, int priceBand, int seed)
         {
             _instrument = instrument;
             _depth = instrument.Specifications.Depth;
             _flow = new OrderFlowSimulator(new LimitOrderBook(-priceBand, priceBand));
+            _scratch = new PriceLevel[_depth];
 
-            _spinTask = GenerateUpdatesAsync(new WeakReference<Orderbook>(this), instrument, producer, _disposedSource);
+            _spinTask = GenerateUpdatesAsync(new WeakReference<Orderbook>(this), instrument, producer,
+                unchecked(seed * 31 + instrument.Id * 7919), _disposedSource);
         }
 
         /// <summary>
@@ -41,14 +37,13 @@ namespace MarketData.Server
         private static async Task GenerateUpdatesAsync(WeakReference<Orderbook> orderbook,
             Instrument instrument,
             IUpdateProducer producer,
+            int seed,
             TaskCompletionSource disposedSource)
         {
-            var random = new Random(instrument.Id * 7919 + DateTime.Now.Millisecond);
+            var random = new Random(seed);
             var specifications = instrument.Specifications;
 
-            // System.Text.Json on .NET 6 fills missing constructor parameters with default(T) rather
-            // than the declared default, so a config that omits UpdatesPerSecond would otherwise
-            // deserialise to a rate of zero and produce a silent feed. Treat non-positive as unset.
+            // Defensive fallback for programmatic callers; file configuration rejects this value.
             var updatesPerSecond = specifications.UpdatesPerSecond > 0 ? specifications.UpdatesPerSecond : 1.0;
             var updatesPerTick = updatesPerSecond * _tick.TotalSeconds;
             var stopwatch = Stopwatch.StartNew();
@@ -212,7 +207,7 @@ namespace MarketData.Server
         private readonly List<OrderbookUpdate> _updates = new List<OrderbookUpdate>(64);
         private readonly DepthProjection _projection = new DepthProjection();
         private readonly List<LevelChange> _changes = new List<LevelChange>(64);
-        private readonly PriceLevel[] _scratch = new PriceLevel[1024];
+        private readonly PriceLevel[] _scratch;
         private int _stepsSinceCompact;
         private readonly Task _spinTask;
         private readonly object _lock = new object();

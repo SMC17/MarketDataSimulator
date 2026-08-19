@@ -68,12 +68,13 @@ def run_case(args, subscribers, rate):
         "VerboseLogging": False,
         "StatisticsIntervalSeconds": 1,
         "RunForSeconds": run_for,
-        "BookImplementation": args.book,
         "PriceBand": 512,
         "Multicast": {
             "Enabled": True,
             "Group": args.group,
             "Port": args.port,
+            "RedundantGroup": args.redundant_group or "",
+            "RedundantPort": args.redundant_port,
             "Interface": "127.0.0.1",
             "MaxBatch": args.max_batch,
             "FlushIntervalMs": args.flush_interval_ms,
@@ -110,7 +111,9 @@ def run_case(args, subscribers, rate):
             "--warmup", str(args.warmup), "--duration", str(args.duration),
             "--receive-buffer", str(args.receive_buffer),
             "--label", label, "--out", str(out_path),
-        ], cwd=str(BENCH_DLL.parent), env=ENV,
+        ] + (["--redundant-group", args.redundant_group,
+              "--redundant-port", str(args.redundant_port)] if args.redundant_group else []),
+            cwd=str(BENCH_DLL.parent), env=ENV,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
         host_busy0, host_total0 = host_cpu_sample()
@@ -141,7 +144,9 @@ def run_case(args, subscribers, rate):
         result["UpdateRatePerInstrument"] = rate
         result["AggregateUpdateRate"] = rate * args.instruments
         result["MaxBatch"] = args.max_batch
-        result["BenchOutput"] = output.strip().splitlines()[-4:]
+        result["BenchOutput"] = [
+            line for line in output.strip().splitlines() if not line.startswith("Wrote ")
+        ][-3:]
     finally:
         server.send_signal(signal.SIGINT)
         try:
@@ -173,9 +178,10 @@ def main():
     parser.add_argument("--rates", type=float, nargs="+", default=[50.0])
     parser.add_argument("--instruments", type=int, default=2)
     parser.add_argument("--depth", type=int, default=10)
-    parser.add_argument("--book", default="SortedArray")
     parser.add_argument("--group", default="239.7.7.7")
     parser.add_argument("--port", type=int, default=31007)
+    parser.add_argument("--redundant-group")
+    parser.add_argument("--redundant-port", type=int, default=0)
     parser.add_argument("--max-batch", type=int, default=1)
     parser.add_argument("--flush-interval-ms", type=float, default=0.0)
     parser.add_argument("--receive-buffer", type=int, default=256 * 1024)

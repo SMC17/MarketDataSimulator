@@ -154,7 +154,7 @@ namespace MarketData.Tests
                 var offset = MarketData.Common.Feed.FeedProtocol.HeaderSize;
                 offset += MarketData.Common.Feed.FeedProtocol.WriteIncremental(buffer.AsSpan(offset),
                     MarketData.Common.Feed.FeedMessageType.Add, 1, Side.Bid, new PriceLevel(-i % 100, 100));
-                MarketData.Common.Feed.FeedProtocol.WriteHeader(buffer, 1, (ulong)i, i);
+                MarketData.Common.Feed.FeedProtocol.WriteHeader(buffer.AsSpan(0, offset), 1, 7, (ulong)i, i);
             }
 
             var bytes = BytesPerIteration(Encode, warmupIterations: 10_000, iterations: 200_000);
