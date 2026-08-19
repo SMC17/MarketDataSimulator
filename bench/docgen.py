@@ -1,27 +1,5 @@
 #!/usr/bin/env python3
-"""
-Writes the generated tables in README.md and BENCHMARKS.md from bench/results/,
-and verifies in CI that they still match.
-
-Why this exists: an audit found a published benchmark figure that had drifted
-from its results file by roughly six times, in the direction that flattered the
-argument the prose around it was making. Correcting that number once fixes one
-number. Removing the hand that copies numbers fixes the class.
-
-Each generated region in a document is delimited:
-
-    <!-- generated: books -->
-    ...table...
-    <!-- /generated -->
-
-`--write` replaces the contents of every region from the results files.
-`--check` exits non-zero if any region is stale, and prints the diff. Prose
-outside the markers is written by hand and never touched.
-
-Usage:
-    python3 bench/docgen.py --write
-    python3 bench/docgen.py --check
-"""
+"""Generate benchmark tables from committed JSON; --check rejects drift."""
 import argparse
 import difflib
 import glob
@@ -219,6 +197,46 @@ def v2_protocol():
     return table(["Case", "Packet", "Median", "Min–max", "Rate", "Allocation"], rows)
 
 
+def v2_durability():
+    data = load("durability-v2.json")
+    append = []
+    for row in data["Append"]:
+        append.append([
+            row["Name"], row["Policy"], f"{row['PayloadBytes']:,} B",
+            f"{row['MedianNanoseconds']:,.1f} ns",
+            f"{row['MinNanoseconds']:,.1f}–{row['MaxNanoseconds']:,.1f} ns",
+            f"{row['AppendsPerSecond']:,.0f}/s", f"{row['MedianSyncs']:,}",
+            f"{row['BytesAllocatedPerAppend']:.0f} B/op",
+        ])
+
+    recovery = data["Recovery"]
+    recovery_table = table(
+        ["Messages", "Checkpoint", "Full replay", "Checkpoint + tail", "Speed-up"],
+        [[f"{recovery['Messages']:,}", f"{recovery['CheckpointSequence']:,}",
+          f"{recovery['FullMedianMilliseconds']:.2f} ms "
+          f"({recovery['FullMinMilliseconds']:.2f}–{recovery['FullMaxMilliseconds']:.2f})",
+          f"{recovery['CheckpointMedianMilliseconds']:.2f} ms "
+          f"({recovery['CheckpointMinMilliseconds']:.2f}–"
+          f"{recovery['CheckpointMaxMilliseconds']:.2f})",
+          f"{recovery['SpeedUp']:.2f}×"]])
+
+    ranges = []
+    for row in data["RangeReads"]:
+        ranges.append([
+            row["Name"], f"{row['Queries']:,}", f"{row['IndexEntries']:,}",
+            f"{row['MedianNanosecondsPerRequest'] / 1000:,.1f} µs",
+            f"{row['MinNanosecondsPerRequest'] / 1000:,.1f}–"
+            f"{row['MaxNanosecondsPerRequest'] / 1000:,.1f} µs",
+            f"{row['BytesAllocatedPerRequest']:,.0f} B/request",
+        ])
+
+    return (table(["Append contract", "Policy", "Payload", "Median", "Min–max",
+                   "Rate", "Syncs/trial", "Allocation"], append)
+            + "\n\n" + recovery_table
+            + "\n\n" + table(["10-message range", "Queries", "Index entries", "Median",
+                                "Min–max", "Allocation"], ranges))
+
+
 def v2_matching():
     rows = []
     for row in load("matching-v2.json")["Results"]:
@@ -300,6 +318,8 @@ def v2_headline():
         transitions += data["Transitions"][0]["RowsCompared"]
         exact = exact and all(r["RowsMatched"] == r["RowsCompared"] for r in data["Transitions"])
     multicast = max(load("protocolv2-summary.json"), key=lambda r: r["Subscribers"])
+    journal = next(r for r in load("durability-v2.json")["Append"]
+                   if r["Name"] == "seal + packet WAL")
     rows = [
         ["Feed encode → apply", f"{protocol['MedianNanoseconds']:.1f} ns median",
          f"{protocol['BytesAllocatedPerOperation']:.0f} B/op"],
@@ -309,6 +329,8 @@ def v2_headline():
          f"{measurement(matching_row['MatchReplenishCycleNs']):.1f} ns/cycle median", "state preserving"],
         ["Committed NASDAQ samples", f"{transitions:,} transitions per implementation",
          "exact" if exact else "mismatch present"],
+        ["Seal + journal feed packet", f"{journal['MedianNanoseconds']:,.1f} ns median",
+         f"{journal['BytesAllocatedPerAppend']:.0f} B/op; OS-buffered acknowledgement"],
         [f"Loopback multicast, {multicast['Subscribers']:,} subscribers",
          f"{multicast['MessagesPerSecond']:,.0f} delivered msg/s",
          f"{multicast['Gaps']} gaps; {multicast['IntegrityFailures']} CRC failures"],
@@ -534,18 +556,7 @@ def head_to_head():
     if not rows:
         raise MissingResults("no subscriber count was measured on both transports")
 
-    measured_together = {r[0] for r in rows}
-    only_multicast = [f"{r['Subscribers']:,}" for r in load_sweep("mcast")
-                      if f"{r['Subscribers']:,}" not in measured_together]
-
-    rendered = table(["Subscribers", "Unicast mean", "Multicast mean", "Improvement"], rows)
-
-    if only_multicast:
-        rendered += ("\n\nMulticast was also measured at "
-                     + ", ".join(only_multicast)
-                     + " subscribers, where unicast was not run; those points are in the "
-                       "multicast sweep in BENCHMARKS.md.")
-    return rendered
+    return table(["Subscribers", "Unicast mean", "Multicast mean", "Improvement"], rows)
 
 
 def equal_work():
@@ -622,17 +633,8 @@ def cost_per_message():
          f"**{mcast_cost:.2f} µs**" if mcast_cost else "—"],
     ]
 
-    rendered = table(["Transport", "Highest sustained subscribers", "Messages/s", "Server CPU",
-                      "Server CPU per message"], rows)
-
-    if unicast_cost and mcast_cost:
-        rendered += (f"\n\nMulticast delivers each message for "
-                     f"**{unicast_cost / mcast_cost:.0f}× less server CPU**, to "
-                     f"**{best_mcast['Subscribers'] / best_unicast['RequestedSubscribers']:.1f}× "
-                     f"the subscribers** at "
-                     f"**{best_mcast['MessagesPerSecond'] / best_unicast['MessagesPerSecond']:.1f}× "
-                     f"the throughput**.")
-    return rendered
+    return table(["Transport", "Highest sustained subscribers", "Messages/s", "Server CPU",
+                  "Server CPU per message"], rows)
 
 
 def headline():
@@ -716,6 +718,7 @@ def repeatability():
 REGIONS = {
     "v2-environment": v2_environment,
     "v2-protocol": v2_protocol,
+    "v2-durability": v2_durability,
     "v2-matching": v2_matching,
     "v2-books": v2_books,
     "v2-queue": v2_queue,

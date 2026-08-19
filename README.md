@@ -17,7 +17,9 @@ This is a research system, not a production venue. The implemented boundary is e
 | Public depth | Derived from matching events; no second source of truth |
 | Dissemination | Bounded gRPC fan-out or sequenced UDP multicast with A/B arbitration |
 | Wire protocol | Fixed little-endian v2 packets, session identity, exact length, CRC-32C |
-| Recovery | Bounded reorder, per-instrument stale generations, atomic snapshots |
+| Durability | Single-writer segmented WAL, restart repair, CRC-checked checkpoints |
+| Recovery | Bounded reorder, exact TCP gap fill, sparse range index, atomic snapshots |
+| Governance | 128-bit layout fingerprints, conservative compatibility, bitemporal reference data |
 | Validation | Differential/property tests and LOBSTER-derived NASDAQ replay |
 | Analytics | Allocation-free order-flow imbalance, online regression, stylized facts |
 
@@ -55,11 +57,29 @@ Decoder invariants:
 - Conflicting A/B packets at the same session and sequence are counted as line divergence.
 - Exact packet length, message boundaries, sides, quantities, snapshot order, and checksum are
   validated before state or sequence advances.
-- Out-of-order packets are held within a fixed bound. `GapDetected` is the extension point for a
-  retransmission service; periodic snapshots are the implemented recovery path.
+- Out-of-order packets are bounded. Missing ranges use session-scoped TCP gap fill; unavailable or
+  oversized ranges require a snapshot.
 
 The reconstructed book is either current or explicitly stale. It is never silently accepted after
 modeled loss, corruption, late join, or restart.
+
+## Durability contract
+
+The publisher appends each sealed packet before either multicast send. One writer owns a journal;
+message sequences are contiguous and session-bound. Startup truncates only an incomplete final
+record. Bad CRCs, wrong sessions, sequence holes, and missing middle segments fail closed.
+
+| Policy | Append acknowledgement |
+|---|---|
+| `OsBuffered` | bytes reached the OS page cache; process crash safe, power loss unsafe |
+| `SyncPeriodic` | OS page cache; a dedicated thread runs `fsync` every `SyncInterval` while dirty |
+| `SyncEachRecord` | each returned append passed `FileStream.Flush(true)` |
+
+Checkpoints carry format version, session, sequence, exact length, commit trailer, and CRC-32C.
+Restore validates into temporary state before replacing live books. Gap fill has request/response
+CRCs, exact range coverage, session fencing, timeouts, range limits, bounded concurrency, and a
+sparse index that refreshes as the WAL grows.
+`Flush(true)` is the portable OS boundary; controller caches still require power-loss protection.
 
 ## Core data structures
 
@@ -95,6 +115,7 @@ are generated from the committed JSON; methodology and raw-artifact boundaries a
 | Batched SPSC hand-off | 6.3 ns/item median | 0.066 B/item including harness setup |
 | Matching at 100,000 resting orders | 98.7 ns/cycle median | state preserving |
 | Committed NASDAQ samples | 39,998 transitions per implementation | exact |
+| Seal + journal feed packet | 813.7 ns median | 0 B/op; OS-buffered acknowledgement |
 | Loopback multicast, 500 subscribers | 485,393 delivered msg/s | 0 gaps; 0 CRC failures |
 <!-- /generated -->
 
@@ -107,28 +128,7 @@ contemporaneous relationship with returns in the recorded AMZN session but less 
 R². Stylized-fact checks also reject the simulator as a realistic price model. It is a deterministic
 systems load generator; real market data remains the oracle for distribution-dependent research.
 
-### Scaling with the audience (pre-v2 generation)
-
-The table above measures the v2 protocol. How the architecture scales with the *number of
-subscribers* is a separate question, measured before v2 on a different host — so these figures are
-not comparable with the ones above and are never combined with them.
-
-<!-- generated: cost-per-message -->
-| Transport | Highest sustained subscribers | Messages/s | Server CPU | Server CPU per message |
-|---|---|---|---|---|
-| Unicast gRPC | 900 | 86,621 | 229.4% | **26.48 µs** |
-| Multicast | 6,000 | 594,067 | 73.2% | **1.23 µs** |
-
-Multicast delivers each message for **21× less server CPU**, to **6.7× the subscribers** at **6.9× the throughput**.
-<!-- /generated -->
-
-TCP fan-out costs one write per subscriber per update, so unicast latency tracks audience size
-rather than workload: at a fixed 10,000 msg/s, 100 subscribers see 1.61 ms and 1,000 see 18.63 ms.
-Multicast removes the term outright — the publisher's packet rate stays between 98.6 and 100.3/s
-from 100 subscribers to 6,000, because it sends once and holds no subscriber table at all. Multicast
-sustained 6,000 subscribers at 34.4 ms mean with zero gaps and zero stale receivers; 8,000 failed
-with 594 detected sequence gaps, which is the sequencing machinery doing its job rather than
-silently corrupting a book. Full sweeps, repeatability and threats to validity are in
+Earlier audience-scaling measurements are retained under a separate host and protocol boundary in
 [BENCHMARKS.md](BENCHMARKS.md#transport-scaling-pre-v2-generation).
 
 ## Build and run
@@ -151,6 +151,7 @@ Run the evidence suites:
 
 ```bash
 dotnet run --project Bench -c Release -- protocol --iterations 1000000 --trials 7
+dotnet run --project Bench -c Release -- durability --records 5000 --trials 5
 dotnet run --project Bench -c Release -- queue --items 1000000 --trials 7
 dotnet run --project Bench -c Release -- matching --sizes 100,1000,10000,100000
 dotnet run --project Bench -c Release -- replay --data data/sample --trials 5
@@ -159,7 +160,8 @@ python3 bench/run_multicast.py --subscribers 100 500 --rates 500 --tag protocolv
 
 `ServerConfiguration` rejects invalid ports, duplicate instruments, unsafe depth and price bands,
 non-finite rates, multicast addresses, aliased A/B endpoints, and invalid recovery intervals. A
-fixed `Seed` makes instrument flow reproducible.
+fixed `Seed` makes instrument flow reproducible. `Multicast.Journal` enables the WAL and optional
+retransmission port; every server start writes a distinct session directory.
 
 ## Real data
 
@@ -182,6 +184,9 @@ and redistribution terms explicitly.
 Common/Matching   sequencer-facing order book and depth projection
 Common/Books      aggregated depth structures
 Common/Feed       wire protocol, CRC, multicast, decoder state machine
+Common/Durability journal, checkpoints, sparse range reads, retransmission
+Common/Governance schema fingerprints, compatibility, negotiation
+Common/Reference  effective-dated instruments and venue sessions
 Common/Lobster    exact integer parser and replay oracle
 Common/Analytics  streaming microstructure statistics
 Server            deterministic simulator and validated configuration
@@ -193,9 +198,11 @@ Tests             deterministic, adversarial, differential, and real-data tests
 
 A venue or trading platform would still require:
 
-- a durable sequencer, write-ahead journal, checkpoints, catch-up, and retransmission;
-- schema governance, compatibility tests, reference-data lifecycle, and session calendars;
-- pre-trade risk, credit limits, kill switches, drop copy, audit retention, and entitlements;
+- a replicated and fenced sequencer, quorum commit, deterministic takeover, and cross-site archive;
+- retention policy, sequencer-thread checkpoints, directory-metadata durability, and repair tooling;
+- runtime schema negotiation, controlled rollout, and authoritative reference-data distribution;
+- pre-trade risk, credit limits, kill switches, drop copy, audit retention, and authenticated
+  entitlements for live and recovery channels;
 - PTP-synchronized clocks with uncertainty, hardware timestamps, CPU/NUMA affinity, and NIC/kernel
   bypass where measurements justify them;
 - redundant hosts and sites, deterministic failover, SLOs, telemetry, chaos drills, and disaster
@@ -205,9 +212,13 @@ Those are explicit next boundaries, not implications of a low local benchmark nu
 
 ## Design lineage
 
-The design applies ideas discussed in Jane Street's *Signals and Threads*: sequenced broadcast and
-redundant lines from [Multicast and the Markets](https://signalsandthreads.com/multicast-and-the-markets/),
-deterministic replay from [State Machine Replication](https://signalsandthreads.com/state-machine-replication-and-why-you-should-care/),
-hostile deterministic tests from [Why Testing Is Hard](https://signalsandthreads.com/why-testing-is-hard-and-how-to-fix-it/),
-measurement discipline from [Performance Engineering on Hard Mode](https://signalsandthreads.com/performance-engineering-on-hard-mode/),
-and monotonic-time semantics from [Clock Synchronization](https://signalsandthreads.com/clock-synchronization/).
+| Source | Applied constraint |
+|---|---|
+| [Signals and Threads: multicast](https://signalsandthreads.com/multicast-and-the-markets/) and [state-machine replication](https://signalsandthreads.com/state-machine-replication-and-why-you-should-care/) | global sequence, A/B lines, deterministic replay |
+| [Jane Street: battle-tested systems](https://blog.janestreet.com/getting-from-tested-to-battle-tested/) | deterministic faults, simulated timing, state-machine invariants |
+| [Cloudflare: million-packet UDP](https://blog.cloudflare.com/how-to-receive-a-million-packets/) | bounded socket work and a separate reliable repair channel |
+| [Stripe: idempotency](https://stripe.com/blog/idempotency) and [rate limiters](https://stripe.com/blog/rate-limiters) | session identity, exact retries, cheap refusal, concurrency limits |
+| [Netflix: performance under load](https://netflixtechblog.com/performance-under-load-3e6fa9a60581) | bound in-flight recovery before latency collapses |
+| [Dan Luu: fsync failures](https://danluu.com/fsyncgate/) and [Mechanical Sympathy: false sharing](https://mechanical-sympathy.blogspot.com/2011/07/) | failure-specific durability claims and padded hand-off cursors |
+| [HRT: devirtualisation](https://www.hudsonrivertrading.com/hrtbeat/optimising-compiler-performance-a-case-for-devirtualisation/) and [thenumb.at: open addressing](https://thenumb.at/Hashtables/) | compiler-visible hot paths and cache-coherent indexing |
+| [Aeron Archive](https://aeron.io/docs/aeron-archive/overview/) and [Two Sigma metrics](https://www.twosigma.com/articles/building-a-high-throughput-metrics-system-using-open-source-software/) | position-based replay and measurement-led requirements |

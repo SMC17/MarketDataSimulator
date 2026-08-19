@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using MarketData.Common;
 using MarketData.Common.Feed;
+using MarketData.Common.Durability;
 
 namespace MarketData.Server.Configuration
 {
@@ -16,6 +17,17 @@ namespace MarketData.Server.Configuration
         public int MaxBatch { get; set; } = 1;
         public double FlushIntervalMs { get; set; }
         public double SnapshotIntervalSeconds { get; set; } = 1.0;
+        public JournalConfiguration Journal { get; set; } = new JournalConfiguration();
+    }
+
+    public sealed class JournalConfiguration
+    {
+        public bool Enabled { get; set; }
+        public string Directory { get; set; } = "journal";
+        public string Policy { get; set; } = nameof(DurabilityPolicy.SyncPeriodic);
+        public long SegmentBytes { get; set; } = 64L * 1024 * 1024;
+        public double SyncIntervalMs { get; set; } = 200;
+        public int RetransmissionPort { get; set; }
     }
 
     public sealed class ServerConfiguration
@@ -112,6 +124,9 @@ namespace MarketData.Server.Configuration
             if (Multicast.SnapshotIntervalSeconds > TimeSpan.MaxValue.TotalSeconds)
                 throw new InvalidDataException("Multicast.SnapshotIntervalSeconds exceeds TimeSpan capacity");
 
+            Multicast.Journal ??= new JournalConfiguration();
+            ValidateJournal(Multicast.Journal);
+
             if (string.IsNullOrWhiteSpace(Multicast.RedundantGroup))
             {
                 if (Multicast.RedundantPort != 0)
@@ -128,6 +143,41 @@ namespace MarketData.Server.Configuration
 
             if (group.Equals(redundantGroup) && Multicast.Port == redundantPort)
                 throw new InvalidDataException("multicast A and B endpoints must differ");
+        }
+
+        private static void ValidateJournal(JournalConfiguration journal)
+        {
+            if (!journal.Enabled)
+            {
+                if (journal.RetransmissionPort != 0)
+                    throw new InvalidDataException(
+                        "Multicast.Journal.RetransmissionPort requires the journal");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(journal.Directory))
+                throw new InvalidDataException("Multicast.Journal.Directory is required");
+            try { _ = Path.GetFullPath(journal.Directory); }
+            catch (Exception error) when (error is ArgumentException or NotSupportedException)
+            {
+                throw new InvalidDataException("Multicast.Journal.Directory is invalid", error);
+            }
+
+            if (string.IsNullOrWhiteSpace(journal.Policy) ||
+                int.TryParse(journal.Policy, out _) ||
+                !Enum.TryParse<DurabilityPolicy>(journal.Policy, true, out var policy) ||
+                !Enum.IsDefined(policy))
+                throw new InvalidDataException("Multicast.Journal.Policy is invalid");
+
+            var minimumSegment = JournalRecord.SizeFor(16) +
+                JournalRecord.SizeFor(JournalRecord.MaxPayloadSize);
+            if (journal.SegmentBytes < minimumSegment)
+                throw new InvalidDataException("Multicast.Journal.SegmentBytes is too small");
+            if (!double.IsFinite(journal.SyncIntervalMs) || journal.SyncIntervalMs <= 0 ||
+                journal.SyncIntervalMs > uint.MaxValue - 1)
+                throw new InvalidDataException("Multicast.Journal.SyncIntervalMs is invalid");
+            if (journal.RetransmissionPort != 0)
+                ValidatePort(journal.RetransmissionPort, "Multicast.Journal.RetransmissionPort");
         }
 
         private static bool IsNonNegativeFinite(double value) => double.IsFinite(value) && value >= 0;
