@@ -18,6 +18,7 @@ namespace MarketData.Tests
         public static IEnumerable<object[]> Implementations()
         {
             yield return new object[] { "SortedArray" };
+            yield return new object[] { "Vectorized" };
             yield return new object[] { "Ladder" };
             yield return new object[] { "Tree" };
         }

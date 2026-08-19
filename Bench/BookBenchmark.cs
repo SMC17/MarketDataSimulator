@@ -52,7 +52,7 @@ namespace MarketData.Bench
                 var band = Math.Max(64, depth * 4);
                 var stream = GenerateStream(band);
 
-                foreach (var name in new[] { nameof(SortedArrayBook), nameof(LadderBook), nameof(TreeBook) })
+                foreach (var name in new[] { nameof(SortedArrayBook), nameof(VectorizedBook), nameof(LadderBook), nameof(TreeBook) })
                 {
                     var mixed = MeasureMixed(name, depth, band, stream);
                     var touch = MeasureTouch(name, depth, band, stream);
@@ -83,6 +83,7 @@ namespace MarketData.Bench
         private static IOrderBook Create(string name, int depth, int band) => name switch
         {
             nameof(SortedArrayBook) => new SortedArrayBook(depth),
+            nameof(VectorizedBook) => new VectorizedBook(depth),
             nameof(LadderBook) => new LadderBook(depth, -band, band),
             nameof(TreeBook) => new TreeBook(depth),
             _ => throw new ArgumentOutOfRangeException(nameof(name)),

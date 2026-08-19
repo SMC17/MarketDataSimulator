@@ -43,7 +43,7 @@ namespace MarketData.Tests
 
         public static TheoryData<string> Implementations() => new TheoryData<string>
         {
-            "SortedArray", "Ladder", "Tree",
+            "SortedArray", "Vectorized", "Ladder", "Tree",
         };
 
         /// <summary>

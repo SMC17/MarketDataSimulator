@@ -17,12 +17,12 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SERVER_DLL = ROOT / "Server/bin/Release/net6.0/Server.dll"
-BENCH_DLL = ROOT / "Bench/bin/Release/net6.0/Bench.dll"
+SERVER_DLL = ROOT / "Server/bin/Release/net8.0/Server.dll"
+BENCH_DLL = ROOT / "Bench/bin/Release/net8.0/Bench.dll"
 RESULTS = ROOT / "bench/results"
 CONFIGS = ROOT / "bench/configs"
 
-ENV = dict(os.environ, DOTNET_ROLL_FORWARD="Major", DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1")
+ENV = dict(os.environ, DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1")
 
 STATS_RE = re.compile(
     r"STATS clients=(\d+) queue=(-?\d+) peakQueue=(-?\d+) published/s=(\d+) "

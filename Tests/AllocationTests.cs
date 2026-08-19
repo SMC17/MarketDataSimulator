@@ -116,6 +116,7 @@ namespace MarketData.Tests
         /// </summary>
         [Theory]
         [InlineData("SortedArray")]
+        [InlineData("Vectorized")]
         [InlineData("Ladder")]
         public void AggregatedBookPublishAllocatesNothing(string implementation)
         {
