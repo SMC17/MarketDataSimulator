@@ -45,31 +45,9 @@ namespace MarketData.Bench
 
             var results = new List<BookBenchmarkResult>();
 
-            foreach (var depth in depths)
-            {
-                // The price band is sized to several times the depth so the book stays full,
-                // evictions happen constantly, and the depth cap is genuinely exercised.
-                var band = Math.Max(64, depth * 4);
-                var stream = GenerateStream(band);
-
-                EqualiseDispatch(depth, band, stream);
-
-                foreach (var name in Implementations)
-                {
-                    var mixed = MeasureMixed(name, depth, band, stream);
-                    var touch = MeasureTouch(name, depth, band, stream);
-                    var snapshot = MeasureSnapshot(name, depth, band, stream);
-                    var snapshotBytes = MeasureSnapshotAllocation(name, depth, band, stream);
-                    var clear = MeasureClear(name, depth, band, stream);
-
-                    Console.WriteLine($"{depth,6} {name,18} {mixed,13:F1} {touch,13:F1} {snapshot,13:F1} {clear,13:F1} {snapshotBytes,11:F1}");
-                    results.Add(new BookBenchmarkResult(depth, name,
-                        Math.Round(mixed, 2), Math.Round(touch, 2), Math.Round(snapshot, 2),
-                        Math.Round(clear, 2), Math.Round(snapshotBytes, 1)));
-                }
-
-                Console.WriteLine();
-            }
+            // The whole sweep runs twice and only the second pass is recorded; see Sweep.
+            Sweep(depths, null);
+            Sweep(depths, results);
 
             if (outputPath is not null)
             {
@@ -206,73 +184,138 @@ namespace MarketData.Bench
         }
 
         /// <summary>
-        /// Cost of emptying a populated book.
+        /// Cost of emptying a populated book, excluding the cost of populating it.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// Measured because replaying a session against published snapshots clears the book once
         /// per message, which turns an operation that looks like start-up housekeeping into one of
         /// the hottest on the path. An implementation whose clear is proportional to its price band
         /// rather than to the levels present is unusable there, and nothing else in this suite
         /// would reveal it.
+        /// </para>
+        /// <para>
+        /// Clearing empties the book, so each measurement has to refill it first - and the refill
+        /// is far more expensive than the clear it sets up. Timing the pair together, as this
+        /// originally did, produces a column that is labelled "clear" and is in fact dominated by
+        /// insertion: at depth 1000 the refill is two thousand upserts against a clear that touches
+        /// a few hundred slots. So only the clear sits inside the timer, and the refill is charged
+        /// to nobody.
+        /// </para>
+        /// <para>
+        /// The timestamp pair costs on the order of tens of nanoseconds, which is why the loop
+        /// accumulates many clears per trial rather than reporting a single one.
+        /// </para>
         /// </remarks>
         private static double MeasureClear(string name, int depth, int band, Operation[] stream)
         {
             var book = Create(name, depth, band);
-            const int iterations = 20_000;
+            const int iterations = 2_000;
 
-            return Measure(() =>
+            var trials = new double[Trials];
+
+            for (var trial = 0; trial < Trials + WarmupTrials; trial++)
             {
+                long elapsed = 0;
                 var accumulator = 0;
 
                 for (var i = 0; i < iterations; i++)
                 {
-                    // Refill before each clear, so what is timed is clearing a populated book
-                    // rather than clearing an empty one repeatedly.
                     Populate(book, stream, depth);
+
+                    var start = Stopwatch.GetTimestamp();
                     book.Clear();
+                    elapsed += Stopwatch.GetTimestamp() - start;
+
                     accumulator += book.Count(Side.Bid);
                 }
 
-                return accumulator;
-            }, iterations);
+                Consume(accumulator);
+
+                if (trial >= WarmupTrials)
+                {
+                    trials[trial - WarmupTrials] =
+                        elapsed * (1_000_000_000.0 / Stopwatch.Frequency) / iterations;
+                }
+            }
+
+            var best = double.MaxValue;
+
+            foreach (var nanoseconds in trials)
+            {
+                if (nanoseconds < best)
+                    best = nanoseconds;
+            }
+
+            return best;
+        }
+
+        /// <summary>
+        /// Runs the sweep, recording into <paramref name="results"/> when it is not null.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Called twice, and the first pass is thrown away. That is not superstition; it is the
+        /// only thing that made the numbers stable, and what it corrects is worth stating because
+        /// it silently invalidated an earlier revision of the published table.
+        /// </para>
+        /// <para>
+        /// Whichever depth was measured <em>first</em> reported wrong figures for every
+        /// implementation except the one measured first within it - and the distortion followed
+        /// the position in the sweep, not the depth. Reversing the depth order moved it from depth
+        /// 10 to depth 1000. At depth 10 it was large enough to reverse the ranking, and depth 10
+        /// is the depth this feed actually ships.
+        /// </para>
+        /// <para>
+        /// Two mechanisms are behind it, both artefacts of a managed runtime rather than of the
+        /// data structures. Every measurement calls through <see cref="IOrderBook"/> from one
+        /// shared call site, so the first implementation to reach it makes it monomorphic and the
+        /// JIT devirtualizes for that type, leaving the others to fail a type guard on every call.
+        /// And promotion to optimised code is not merely call-count driven - the compilation
+        /// happens on a background thread, so a configuration can finish measuring while still
+        /// executing unoptimised code. Per-measurement warm-up trials cannot fix the second one,
+        /// because they do not buy wall-clock time for a compilation to land.
+        /// </para>
+        /// <para>
+        /// A discarded full pass fixes both: by the time anything is recorded, every call site has
+        /// seen every implementation and every body has long since been promoted.
+        /// </para>
+        /// </remarks>
+        private static void Sweep(int[] depths, List<BookBenchmarkResult> results)
+        {
+            foreach (var depth in depths)
+            {
+                // The price band is sized to several times the depth so the book stays full,
+                // evictions happen constantly, and the depth cap is genuinely exercised.
+                var band = Math.Max(64, depth * 4);
+                var stream = GenerateStream(band);
+
+                foreach (var name in Implementations)
+                {
+                    var mixed = MeasureMixed(name, depth, band, stream);
+                    var touch = MeasureTouch(name, depth, band, stream);
+                    var snapshot = MeasureSnapshot(name, depth, band, stream);
+                    var snapshotBytes = MeasureSnapshotAllocation(name, depth, band, stream);
+                    var clear = MeasureClear(name, depth, band, stream);
+
+                    if (results is null)
+                        continue;
+
+                    Console.WriteLine($"{depth,6} {name,18} {mixed,13:F1} {touch,13:F1} {snapshot,13:F1} {clear,13:F1} {snapshotBytes,11:F1}");
+                    results.Add(new BookBenchmarkResult(depth, name,
+                        Math.Round(mixed, 2), Math.Round(touch, 2), Math.Round(snapshot, 2),
+                        Math.Round(clear, 2), Math.Round(snapshotBytes, 1)));
+                }
+
+                if (results is not null)
+                    Console.WriteLine();
+            }
         }
 
         private static readonly string[] Implementations =
         {
             nameof(SortedArrayBook), nameof(VectorizedBook), nameof(LadderBook), nameof(TreeBook),
         };
-
-        /// <summary>
-        /// Pushes every implementation through every measurement path before any of them is timed.
-        /// </summary>
-        /// <remarks>
-        /// <para>
-        /// Without this the results are not a comparison of data structures, they are a comparison
-        /// of JIT luck. Each measurement body calls through <see cref="IOrderBook"/> from a single
-        /// shared call site. The first implementation to reach that site makes it monomorphic, so
-        /// the JIT devirtualizes and inlines the call for that type - and every implementation
-        /// measured afterwards fails the resulting type guard on every call.
-        /// </para>
-        /// <para>
-        /// The effect is not subtle. Whichever book happened to be measured first was reported
-        /// several times faster than it is, and its rivals correspondingly slower, purely from
-        /// ordering. It reversed the ranking at the shipping depth. Running every implementation
-        /// through every path first leaves each call site in the same polymorphic state for all
-        /// four, which is also the state it is in when the server holds an
-        /// <see cref="IOrderBook"/> at run time.
-        /// </para>
-        /// </remarks>
-        private static void EqualiseDispatch(int depth, int band, Operation[] stream)
-        {
-            foreach (var name in Implementations)
-            {
-                MeasureMixed(name, depth, band, stream);
-                MeasureTouch(name, depth, band, stream);
-                MeasureSnapshot(name, depth, band, stream);
-                MeasureSnapshotAllocation(name, depth, band, stream);
-                MeasureClear(name, depth, band, stream);
-            }
-        }
 
         private static void Populate(IOrderBook book, Operation[] stream, int depth)
         {

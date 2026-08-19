@@ -47,18 +47,9 @@ namespace MarketData.Bench
 
             var results = new List<MatchingResult>();
 
-            foreach (var size in sizes)
-            {
-                var add = MeasureAdd(size);
-                var cancel = MeasureCancel(size);
-                var match = MeasureMatch(size);
-                var mixed = MeasureMixed(size);
-                var bytes = MeasureMixedAllocation(size);
-
-                Console.WriteLine($"{size,15:N0} {add,11:F1} {cancel,13:F1} {match,12:F1} {mixed,12:F1} {bytes,11:F1}");
-                results.Add(new MatchingResult(size, Math.Round(add, 2), Math.Round(cancel, 2),
-                    Math.Round(match, 2), Math.Round(mixed, 2), Math.Round(bytes, 1)));
-            }
+            // The whole sweep runs twice and only the second pass is recorded; see Sweep.
+            Sweep(sizes, null);
+            Sweep(sizes, results);
 
             Console.WriteLine();
             Console.WriteLine("Mixed = 60% add, 35% cancel, 5% aggressive, approximating a real venue's message mix.");
@@ -93,6 +84,37 @@ namespace MarketData.Bench
             }
 
             return book;
+        }
+
+        /// <summary>
+        /// Runs the sweep, recording into <paramref name="results"/> when it is not null.
+        /// </summary>
+        /// <remarks>
+        /// Called twice, and the first pass is discarded. The per-measurement warm-up trials are
+        /// not enough on their own: promotion to optimised code happens on a background thread, so
+        /// the first configuration measured can finish while still executing unoptimised code. It
+        /// showed up as the smallest book appearing twice as slow per operation as books ten times
+        /// its size - not a cache effect and not the algorithm, but the first row paying for the
+        /// JIT on everyone's behalf. Warm-up trials cannot fix that, because they do not buy
+        /// wall-clock time for a compilation to land.
+        /// </remarks>
+        private static void Sweep(int[] sizes, List<MatchingResult> results)
+        {
+            foreach (var size in sizes)
+            {
+                var add = MeasureAdd(size);
+                var cancel = MeasureCancel(size);
+                var match = MeasureMatch(size);
+                var mixed = MeasureMixed(size);
+                var bytes = MeasureMixedAllocation(size);
+
+                if (results is null)
+                    continue;
+
+                Console.WriteLine($"{size,15:N0} {add,11:F1} {cancel,13:F1} {match,12:F1} {mixed,12:F1} {bytes,11:F1}");
+                results.Add(new MatchingResult(size, Math.Round(add, 2), Math.Round(cancel, 2),
+                    Math.Round(match, 2), Math.Round(mixed, 2), Math.Round(bytes, 1)));
+            }
         }
 
         private static double MeasureAdd(int size)

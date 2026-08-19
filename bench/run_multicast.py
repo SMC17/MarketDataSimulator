@@ -30,6 +30,15 @@ STATS_RE = re.compile(
     r"outQueued=(\d+) outMax=(\d+)")
 
 
+def boot_id():
+    """Identifies the running kernel instance, so a host swap mid-sweep is visible."""
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as handle:
+            return handle.read().strip()
+    except OSError:
+        return None
+
+
 def host_cpu_sample():
     with open("/proc/stat") as handle:
         fields = [int(v) for v in handle.readline().split()[1:]]
@@ -126,6 +135,9 @@ def run_case(args, subscribers, rate):
         result["HostCpuPercent"] = round(
             (host_busy1 - host_busy0) / max(1, host_total1 - host_total0) * 100 * cores, 1)
         result["HostCores"] = cores
+        # See bench/environment.py: a sweep that changes host mid-way must not be
+        # quotable as a single measurement session.
+        result["HostBootId"] = boot_id()
         result["UpdateRatePerInstrument"] = rate
         result["AggregateUpdateRate"] = rate * args.instruments
         result["MaxBatch"] = args.max_batch
@@ -171,6 +183,16 @@ def main():
     parser.add_argument("--duration", type=float, default=20)
     parser.add_argument("--tag", default="mcast")
     args = parser.parse_args()
+
+    # A batch limit with no flush deadline is not a smaller batch - it is no batching
+    # at all. The publisher flushes on every update when the interval is zero, so
+    # --max-batch is silently inert and the sweep measures the same configuration
+    # four times over while appearing to vary it. Refuse it rather than produce a
+    # table that looks like a result.
+    if args.max_batch > 1 and args.flush_interval_ms <= 0:
+        parser.error(
+            "--max-batch > 1 requires --flush-interval-ms > 0; with no flush deadline the "
+            "publisher sends every update immediately and the batch limit is never reached")
 
     results = []
     for rate in args.rates:
