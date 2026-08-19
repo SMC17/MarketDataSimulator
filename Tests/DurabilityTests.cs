@@ -1,18 +1,20 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using MarketData.Common.Books;
 using MarketData.Common.Durability;
+using MarketData.Common.Feed;
 using Xunit;
 
 namespace MarketData.Tests
 {
-    /// <summary>
-    /// The durability layer, tested the only way that means anything: by damaging it.
-    /// </summary>
+    /// <summary>Durability, corruption, restart, and gap-fill invariants.</summary>
     public sealed class DurabilityTests : IDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(),
@@ -36,6 +38,25 @@ namespace MarketData.Tests
 
         private static byte[] Payload(int n) => Encoding.UTF8.GetBytes($"message-{n:D6}");
 
+        private static byte[] SnapshotPacket(ulong sequence, ulong session = Session)
+        {
+            var packet = new byte[FeedProtocol.HeaderSize + FeedProtocol.SnapshotSize(0, 0)];
+            var size = FeedProtocol.HeaderSize + FeedProtocol.WriteSnapshot(
+                packet.AsSpan(FeedProtocol.HeaderSize), 1, ReadOnlySpan<PriceLevel>.Empty,
+                ReadOnlySpan<PriceLevel>.Empty);
+            FeedProtocol.WriteHeader(packet.AsSpan(0, size), 1, session, sequence, 1);
+            return packet.AsSpan(0, size).ToArray();
+        }
+
+        private static byte[] IncrementalPacket(ulong sequence, int price, ulong session = Session)
+        {
+            var packet = new byte[FeedProtocol.HeaderSize + FeedProtocol.IncrementalSize];
+            FeedProtocol.WriteIncremental(packet.AsSpan(FeedProtocol.HeaderSize), FeedMessageType.Add,
+                1, Side.Bid, new PriceLevel(price, 100));
+            FeedProtocol.WriteHeader(packet, 1, session, sequence, 1);
+            return packet;
+        }
+
         // ------------------------------------------------------------------ framing
 
         [Fact]
@@ -54,11 +75,7 @@ namespace MarketData.Tests
             Assert.Equal(buffer.Length, record.TotalSize);
         }
 
-        /// <summary>Every single-byte truncation must be reported as incomplete, never as valid.</summary>
-        /// <remarks>
-        /// This is the case a crash actually produces, and the one a naive reader gets wrong: it
-        /// finds a plausible header, trusts the length, and reads past the end of what was written.
-        /// </remarks>
+        /// <summary>Every truncated prefix is incomplete.</summary>
         [Fact]
         public void EveryTruncationIsDetected()
         {
@@ -251,7 +268,8 @@ namespace MarketData.Tests
             var directory = Dir("segments");
             var payload = Payload(1);
             var perSegment = 20;
-            var segmentBytes = JournalRecord.OverheadSize + JournalRecord.MaxPayloadSize;
+            var segmentBytes = JournalRecord.SizeFor(16) +
+                JournalRecord.SizeFor(JournalRecord.MaxPayloadSize);
 
             using (var journal = new WriteAheadJournal(directory, Session,
                        DurabilityPolicy.OsBuffered, segmentBytes))
@@ -290,14 +308,7 @@ namespace MarketData.Tests
 
         // ------------------------------------------------------------------ checkpoints
 
-        /// <summary>
-        /// Checkpoint + subsequent journal must equal full replay, exactly.
-        /// </summary>
-        /// <remarks>
-        /// The invariant the whole recovery story rests on. Asserted against a book rebuilt from
-        /// scratch rather than against itself, because a checkpoint that is confidently wrong is
-        /// worse than no checkpoint at all.
-        /// </remarks>
+        /// <summary>Checkpoint plus tail replay equals full replay.</summary>
         [Fact]
         public void ACheckpointPlusTheRestOfTheLogEqualsAFullReplay()
         {
@@ -323,6 +334,8 @@ namespace MarketData.Tests
 
             using (var journal = new WriteAheadJournal(directory, Session, DurabilityPolicy.OsBuffered))
             {
+                var encoded = new byte[13];
+
                 for (var i = 0; i < operations.Count; i++)
                 {
                     var op = operations[i];
@@ -333,11 +346,10 @@ namespace MarketData.Tests
 
                     book.Upsert(op.Side, op.Price, op.Quantity);
 
-                    Span<byte> encoded = stackalloc byte[13];
                     System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(encoded, op.Instrument);
                     encoded[4] = (byte)op.Side;
-                    System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(encoded.Slice(5), op.Price);
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(encoded.Slice(9), op.Quantity);
+                    System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(encoded.AsSpan(5), op.Price);
+                    System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(encoded.AsSpan(9), op.Quantity);
 
                     journal.Append(JournalRecordType.Message, sequence, i, encoded);
 
@@ -426,7 +438,10 @@ namespace MarketData.Tests
                 books[1].Upsert(Side.Bid, 10, 100);
 
                 for (ulong sequence = 1; sequence <= 6; sequence++)
+                {
+                    journal.Append(JournalRecordType.Message, sequence, 0, ReadOnlySpan<byte>.Empty);
                     Checkpoint.Write(checkpoints, journal, sequence, Session, books);
+                }
             }
 
             Assert.Equal(3, Checkpoint.Prune(checkpoints, keep: 3));
@@ -438,22 +453,14 @@ namespace MarketData.Tests
             Assert.Throws<ArgumentOutOfRangeException>(() => Checkpoint.Prune(checkpoints, keep: 0));
         }
 
-        /// <summary>
-        /// Recovering from a checkpoint must not re-read the history behind it.
-        /// </summary>
-        /// <remarks>
-        /// The point of a checkpoint is that recovery stops being proportional to uptime. An
-        /// implementation that restores the checkpoint and *then* scans the whole log anyway is
-        /// still O(uptime) and has bought nothing but the book replay - which is what the first
-        /// version here did, and what the recovery benchmark exposed. This asserts the skip
-        /// happens, by counting the records the scan actually visits.
-        /// </remarks>
+        /// <summary>Checkpoint recovery skips complete historical segments.</summary>
         [Fact]
         public void RecoveringFromACheckpointSkipsSegmentsBelowIt()
         {
             var directory = Dir("skip-journal");
             var payload = new byte[512];
-            var segmentBytes = JournalRecord.OverheadSize + JournalRecord.MaxPayloadSize;
+            var segmentBytes = JournalRecord.SizeFor(16) +
+                JournalRecord.SizeFor(JournalRecord.MaxPayloadSize);
             const int count = 4_000;
 
             using (var journal = new WriteAheadJournal(directory, Session, DurabilityPolicy.OsBuffered,
@@ -499,7 +506,8 @@ namespace MarketData.Tests
         {
             var directory = Dir("skip-correct");
             var payload = new byte[512];
-            var segmentBytes = JournalRecord.OverheadSize + JournalRecord.MaxPayloadSize;
+            var segmentBytes = JournalRecord.SizeFor(16) +
+                JournalRecord.SizeFor(JournalRecord.MaxPayloadSize);
             const int count = 3_000;
 
             using (var journal = new WriteAheadJournal(directory, Session, DurabilityPolicy.OsBuffered,
@@ -550,7 +558,8 @@ namespace MarketData.Tests
             service.Start();
 
             var client = new RetransmissionClient(service.Port);
-            var recovered = await client.RequestAsync(100, 109);
+            var recovered = await client.RequestAsync(100, 109,
+                TestContext.Current.CancellationToken);
 
             Assert.NotNull(recovered);
             Assert.Equal(10, recovered.Count);
@@ -560,14 +569,7 @@ namespace MarketData.Tests
                 Assert.Equal(Payload(100 + i), recovered[i].Payload);
         }
 
-        /// <summary>
-        /// A gap too large to fill from history is refused, not served slowly.
-        /// </summary>
-        /// <remarks>
-        /// Retransmission is where one struggling subscriber can become everybody's problem. A
-        /// subscriber this far behind should take a snapshot, which costs O(book) rather than
-        /// O(history).
-        /// </remarks>
+        /// <summary>Oversized recovery ranges require a snapshot.</summary>
         [Fact]
         public async Task AnOversizedRequestIsRefusedRatherThanServed()
         {
@@ -580,7 +582,8 @@ namespace MarketData.Tests
             service.Start();
 
             var client = new RetransmissionClient(service.Port);
-            var refused = await client.RequestAsync(1, RetransmissionService.MaxRangeLength + 1);
+            var refused = await client.RequestAsync(1, RetransmissionService.MaxRangeLength + 1,
+                TestContext.Current.CancellationToken);
 
             Assert.Null(refused);
             Assert.Equal(1, service.RequestsRefused);
@@ -604,16 +607,512 @@ namespace MarketData.Tests
             {
                 for (var i = 51; i <= 400; i++)
                     journal.Append(JournalRecordType.Message, (ulong)i, i, Payload(i));
-            });
+            }, TestContext.Current.CancellationToken);
 
             var client = new RetransmissionClient(service.Port);
-            var recovered = await client.RequestAsync(10, 19);
+            var recovered = await client.RequestAsync(10, 19,
+                TestContext.Current.CancellationToken);
 
             await publishing;
 
             Assert.NotNull(recovered);
             Assert.Equal(10, recovered.Count);
             Assert.Equal(Payload(10), recovered[0].Payload);
+        }
+
+        [Fact]
+        public void ReopeningResumesTheRecoveredWatermark()
+        {
+            var directory = Dir("resume");
+
+            using (var journal = new WriteAheadJournal(directory, Session,
+                       DurabilityPolicy.SyncEachRecord))
+            {
+                for (ulong sequence = 1; sequence <= 10; sequence++)
+                    journal.Append(JournalRecordType.Message, sequence, 0, Payload((int)sequence));
+            }
+
+            using (var journal = new WriteAheadJournal(directory, Session,
+                       DurabilityPolicy.SyncEachRecord))
+            {
+                Assert.Equal(11UL, journal.NextSequence);
+                Assert.Equal(10UL, journal.LastSequence);
+                Assert.Throws<InvalidOperationException>(() =>
+                    journal.Append(JournalRecordType.Message, 10, 0, Payload(10)));
+                journal.Append(JournalRecordType.Message, 11, 0, Payload(11));
+            }
+
+            var report = JournalReader.Recover(directory);
+            Assert.Equal(RecoveryOutcome.Clean, report.Outcome);
+            Assert.Equal(11UL, report.LastSequence);
+            Assert.Equal(12UL, report.NextSequence);
+        }
+
+        [Fact]
+        public void ReopeningRefusesADifferentInitialSequence()
+        {
+            var directory = Dir("resume-initial");
+
+            using (var journal = new WriteAheadJournal(directory, Session,
+                       DurabilityPolicy.SyncEachRecord, initialSequence: 1))
+                journal.Append(JournalRecordType.Message, 1, 0, Payload(1));
+
+            Assert.Throws<InvalidDataException>(() => new WriteAheadJournal(directory, Session,
+                DurabilityPolicy.SyncEachRecord, initialSequence: 0));
+        }
+
+        [Fact]
+        public void ReopeningReplacesAnIncompleteFirstSegment()
+        {
+            var directory = Dir("repair-first-header");
+
+            using (new WriteAheadJournal(directory, Session, DurabilityPolicy.SyncEachRecord)) { }
+
+            var segment = Directory.GetFiles(directory, "segment-*.jrn").Single();
+            using (var stream = new FileStream(segment, FileMode.Open, FileAccess.Write))
+                stream.SetLength(4);
+
+            using (var journal = new WriteAheadJournal(directory, Session,
+                       DurabilityPolicy.SyncEachRecord))
+            {
+                Assert.Equal(1UL, journal.NextSequence);
+                journal.AppendNext(0, Payload(1));
+            }
+
+            var report = JournalReader.Recover(directory);
+            Assert.Equal(RecoveryOutcome.Clean, report.Outcome);
+            Assert.Equal(1UL, report.LastSequence);
+        }
+
+        [Fact]
+        public void ReopeningRepairsATornTailBeforeAppending()
+        {
+            var directory = Dir("repair-tail");
+
+            using (var journal = new WriteAheadJournal(directory, Session,
+                       DurabilityPolicy.SyncEachRecord))
+            {
+                for (ulong sequence = 1; sequence <= 10; sequence++)
+                    journal.Append(JournalRecordType.Message, sequence, 0, Payload((int)sequence));
+            }
+
+            var segment = Directory.GetFiles(directory, "segment-*.jrn").Single();
+            using (var stream = new FileStream(segment, FileMode.Open, FileAccess.Write))
+                stream.SetLength(stream.Length - JournalRecord.SizeFor(Payload(10).Length) / 2);
+
+            using (var journal = new WriteAheadJournal(directory, Session,
+                       DurabilityPolicy.SyncEachRecord))
+            {
+                Assert.Equal(10UL, journal.NextSequence);
+                journal.Append(JournalRecordType.Message, 10, 0, Payload(10));
+            }
+
+            var report = JournalReader.Recover(directory);
+            Assert.Equal(RecoveryOutcome.Clean, report.Outcome);
+            Assert.Equal(10UL, report.LastSequence);
+        }
+
+        [Fact]
+        public void ReopeningRefusesCommittedCorruption()
+        {
+            var directory = Dir("refuse-corrupt");
+
+            using (var journal = new WriteAheadJournal(directory, Session,
+                       DurabilityPolicy.SyncEachRecord))
+            {
+                journal.Append(JournalRecordType.Message, 1, 0, Payload(1));
+            }
+
+            var segment = Directory.GetFiles(directory, "segment-*.jrn").Single();
+            var bytes = File.ReadAllBytes(segment);
+            bytes[bytes.Length - JournalRecord.TrailerSize - 1] ^= 1;
+            File.WriteAllBytes(segment, bytes);
+
+            Assert.Throws<InvalidDataException>(() =>
+                new WriteAheadJournal(directory, Session, DurabilityPolicy.SyncEachRecord));
+        }
+
+        [Fact]
+        public void ADeletedMiddleSegmentIsCorruption()
+        {
+            var directory = Dir("missing-segment");
+            var segmentBytes = JournalRecord.SizeFor(16) +
+                JournalRecord.SizeFor(JournalRecord.MaxPayloadSize);
+            var payload = new byte[JournalRecord.MaxPayloadSize];
+
+            using (var journal = new WriteAheadJournal(directory, Session,
+                       DurabilityPolicy.OsBuffered, segmentBytes))
+            {
+                for (ulong sequence = 1; sequence <= 4; sequence++)
+                    journal.Append(JournalRecordType.Message, sequence, 0, payload);
+            }
+
+            var segments = Directory.GetFiles(directory, "segment-*.jrn").OrderBy(x => x).ToArray();
+            Assert.True(segments.Length >= 4);
+            File.Delete(segments[1]);
+
+            var report = JournalReader.Recover(directory);
+            Assert.Equal(RecoveryOutcome.Corrupt, report.Outcome);
+            Assert.Equal(JournalReadResult.SegmentOrder, report.Failure);
+        }
+
+        [Fact]
+        public void ADeletedFirstSegmentIsCorruption()
+        {
+            var directory = Dir("missing-first-segment");
+            var segmentBytes = JournalRecord.SizeFor(16) +
+                JournalRecord.SizeFor(JournalRecord.MaxPayloadSize);
+            var payload = new byte[JournalRecord.MaxPayloadSize];
+
+            using (var journal = new WriteAheadJournal(directory, Session,
+                       DurabilityPolicy.OsBuffered, segmentBytes))
+            {
+                journal.AppendNext(0, payload);
+                journal.AppendNext(0, payload);
+            }
+
+            var segments = Directory.GetFiles(directory, "segment-*.jrn").OrderBy(x => x).ToArray();
+            Assert.True(segments.Length >= 2);
+            File.Delete(segments[0]);
+
+            var report = JournalReader.Recover(directory);
+            Assert.Equal(RecoveryOutcome.Corrupt, report.Outcome);
+            Assert.Equal(JournalReadResult.SegmentOrder, report.Failure);
+        }
+
+        [Fact]
+        public void ASecondWriterCannotAcquireTheJournal()
+        {
+            var directory = Dir("writer-lease");
+            using var first = new WriteAheadJournal(directory, Session, DurabilityPolicy.OsBuffered);
+
+            Assert.Throws<IOException>(() =>
+                new WriteAheadJournal(directory, Session, DurabilityPolicy.OsBuffered));
+        }
+
+        [Fact]
+        public async Task PeriodicDurabilitySyncsAnIdleWriter()
+        {
+            var directory = Dir("periodic-idle");
+            using var journal = new WriteAheadJournal(directory, Session,
+                DurabilityPolicy.SyncPeriodic, syncInterval: TimeSpan.FromMilliseconds(10));
+            journal.Sync();
+            var before = journal.Syncs;
+            journal.Append(JournalRecordType.Message, 1, 0, Payload(1));
+
+            var deadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+            while (journal.Syncs == before && Stopwatch.GetTimestamp() < deadline)
+                await Task.Delay(10, TestContext.Current.CancellationToken);
+
+            Assert.True(journal.Syncs > before, "the idle periodic writer never reached storage");
+        }
+
+        [Fact]
+        public void OsBufferedAppendAllocatesNothingInSteadyState()
+        {
+            var directory = Dir("append-allocation");
+            var payload = new byte[64];
+            using var journal = new WriteAheadJournal(directory, Session,
+                DurabilityPolicy.OsBuffered);
+
+            journal.AppendNext(0, payload);
+            journal.AppendNext(0, payload);
+            var before = GC.GetAllocatedBytesForCurrentThread();
+
+            for (var i = 0; i < 1_000; i++)
+                journal.AppendNext(i, payload);
+
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert.Equal(0, allocated);
+        }
+
+        [Fact]
+        public void FeedPacketsAdvanceByTheirMessageCount()
+        {
+            var directory = Dir("packet-range");
+            var packet = new byte[FeedProtocol.HeaderSize + 2 * FeedProtocol.IncrementalSize];
+            var offset = FeedProtocol.HeaderSize;
+            offset += FeedProtocol.WriteIncremental(packet.AsSpan(offset), FeedMessageType.Add, 1,
+                Side.Bid, new PriceLevel(-1, 100));
+            offset += FeedProtocol.WriteIncremental(packet.AsSpan(offset), FeedMessageType.Add, 1,
+                Side.Bid, new PriceLevel(-2, 100));
+            FeedProtocol.WriteHeader(packet.AsSpan(0, offset), 2, Session, 0, 1);
+
+            using (var journal = new WriteAheadJournal(directory, Session,
+                       DurabilityPolicy.SyncEachRecord, initialSequence: 0))
+            {
+                journal.AppendPacket(packet.AsSpan(0, offset));
+                Assert.Equal(2UL, journal.NextSequence);
+            }
+
+            var result = JournalReader.TryReadRange(directory, Session, 0, 1, out var found);
+            Assert.Equal(JournalRangeResult.Success, result);
+            Assert.Single(found);
+            Assert.Equal(2, found[0].MessageCount);
+            Assert.Equal(packet.AsSpan(0, offset).ToArray(), found[0].Payload);
+        }
+
+        [Fact]
+        public void GapFillDoesNotReturnAPartialFeedPacket()
+        {
+            var directory = Dir("packet-alignment");
+            var packet = new byte[FeedProtocol.HeaderSize + 2 * FeedProtocol.IncrementalSize];
+            var offset = FeedProtocol.HeaderSize;
+            offset += FeedProtocol.WriteIncremental(packet.AsSpan(offset), FeedMessageType.Add, 1,
+                Side.Bid, new PriceLevel(-1, 100));
+            offset += FeedProtocol.WriteIncremental(packet.AsSpan(offset), FeedMessageType.Add, 1,
+                Side.Bid, new PriceLevel(-2, 100));
+            FeedProtocol.WriteHeader(packet.AsSpan(0, offset), 2, Session, 0, 1);
+
+            using (var journal = new WriteAheadJournal(directory, Session,
+                       DurabilityPolicy.SyncEachRecord, initialSequence: 0))
+                journal.AppendPacket(packet.AsSpan(0, offset));
+
+            var result = JournalReader.TryReadRange(directory, Session, 1, 1, out var found);
+
+            Assert.Equal(JournalRangeResult.Missing, result);
+            Assert.Empty(found);
+        }
+
+        [Fact]
+        public void PublisherRejectsAnInvalidBatchBound()
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new MulticastPublisher(
+                IPAddress.Parse("239.7.7.77"), 31777, IPAddress.Loopback, maxBatch: 0));
+        }
+
+        [Fact]
+        public void PublisherPersistsTheSealedPacket()
+        {
+            var directory = Dir("publisher-journal");
+            using var journal = new WriteAheadJournal(directory, Session,
+                DurabilityPolicy.SyncEachRecord, initialSequence: 0);
+
+            using (var publisher = new MulticastPublisher(IPAddress.Parse("239.7.7.77"), 31777,
+                       IPAddress.Loopback, maxBatch: 1, sessionId: Session, journal: journal))
+            {
+                publisher.PublishSnapshot(1, ReadOnlySpan<PriceLevel>.Empty,
+                    ReadOnlySpan<PriceLevel>.Empty);
+                publisher.Flush();
+            }
+
+            var records = new List<byte[]>();
+            var report = JournalReader.Recover(directory, (in JournalRecordView record) =>
+            {
+                if (record.Type == JournalRecordType.FeedPacket)
+                    records.Add(record.Payload.ToArray());
+                return true;
+            });
+
+            Assert.Equal(RecoveryOutcome.Clean, report.Outcome);
+            Assert.Single(records);
+            Assert.True(FeedProtocol.TryReadHeader(records[0], out var header, out _));
+            Assert.Equal(Session, header.SessionId);
+            Assert.Equal(0UL, header.FirstSequence);
+        }
+
+        [Fact]
+        public async Task FeedGapRepairReplaysPacketsBeforeTheHeldLivePacket()
+        {
+            var directory = Dir("feed-repair");
+            var snapshot = SnapshotPacket(0);
+            var first = IncrementalPacket(1, -1);
+            var second = IncrementalPacket(2, -2);
+
+            using var journal = new WriteAheadJournal(directory, Session,
+                DurabilityPolicy.SyncEachRecord, initialSequence: 0);
+            journal.AppendPacket(snapshot);
+            journal.AppendPacket(first);
+            journal.AppendPacket(second);
+
+            using var service = new RetransmissionService(directory);
+            service.Start();
+            var decoder = new FeedDecoder(_ => new SortedArrayBook(10));
+            decoder.Consume(snapshot);
+            var recovery = new FeedRecoveryCoordinator(decoder,
+                new RetransmissionClient(service.Port));
+
+            var result = await recovery.ConsumeAsync(second, TestContext.Current.CancellationToken);
+
+            Assert.Equal(GapRecoveryResult.Repaired, result);
+            Assert.False(decoder.IsStale);
+            Assert.Equal(3UL, decoder.ExpectedSequence);
+            Assert.Equal(new[] { -1, -2 },
+                decoder.BookFor(1).ToList(Side.Bid).Select(level => level.Price));
+            Assert.Equal(0, decoder.Statistics.Gaps);
+        }
+
+        [Fact]
+        public async Task MissingGapFillRequiresASnapshot()
+        {
+            var directory = Dir("feed-repair-missing");
+            var snapshot = SnapshotPacket(0);
+            var future = IncrementalPacket(2, -2);
+
+            using var journal = new WriteAheadJournal(directory, Session,
+                DurabilityPolicy.SyncEachRecord, initialSequence: 0);
+            journal.AppendPacket(snapshot);
+
+            using var service = new RetransmissionService(directory);
+            service.Start();
+            var decoder = new FeedDecoder(_ => new SortedArrayBook(10));
+            decoder.Consume(snapshot);
+            var recovery = new FeedRecoveryCoordinator(decoder,
+                new RetransmissionClient(service.Port));
+
+            var result = await recovery.ConsumeAsync(future, TestContext.Current.CancellationToken);
+
+            Assert.Equal(GapRecoveryResult.SnapshotRequired, result);
+            Assert.True(decoder.IsStale);
+            Assert.Equal(1, decoder.Statistics.Gaps);
+        }
+
+        [Fact]
+        public async Task RetransmissionRefusesOverflowAndWrongSession()
+        {
+            var directory = Dir("request-validation");
+            using (var journal = new WriteAheadJournal(directory, Session,
+                       DurabilityPolicy.SyncEachRecord))
+                journal.Append(JournalRecordType.Message, 1, 0, Payload(1));
+
+            using var service = new RetransmissionService(directory);
+            service.Start();
+            var client = new RetransmissionClient(service.Port);
+
+            var overflow = await client.RequestDetailedAsync(Session, 0, ulong.MaxValue,
+                TestContext.Current.CancellationToken);
+            var wrongSession = await client.RequestDetailedAsync(Session + 1, 1, 1,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(RetransmissionStatus.InvalidRequest, overflow.Status);
+            Assert.Equal(RetransmissionStatus.WrongSession, wrongSession.Status);
+            Assert.Equal(2, service.RequestsRefused);
+        }
+
+        [Fact]
+        public async Task RetransmissionReportsLiveTailCorruption()
+        {
+            var directory = Dir("request-corrupt-tail");
+            using var journal = new WriteAheadJournal(directory, Session,
+                DurabilityPolicy.OsBuffered);
+            journal.AppendNext(0, Payload(1));
+
+            using var service = new RetransmissionService(directory);
+            service.Start();
+            journal.AppendNext(0, Payload(2));
+
+            var segment = Directory.GetFiles(directory, "segment-*.jrn").Single();
+            using (var stream = new FileStream(segment, FileMode.Open, FileAccess.ReadWrite,
+                       FileShare.ReadWrite))
+            {
+                stream.Position = stream.Length - JournalRecord.TrailerSize - 1;
+                var value = stream.ReadByte();
+                stream.Position--;
+                stream.WriteByte((byte)(value ^ 1));
+                stream.Flush();
+            }
+
+            var response = await new RetransmissionClient(service.Port).RequestDetailedAsync(
+                Session, 1, 2, TestContext.Current.CancellationToken);
+
+            Assert.Equal(RetransmissionStatus.CorruptJournal, response.Status);
+            Assert.Empty(response.Messages);
+        }
+
+        [Fact]
+        public void CheckpointsDetectEverySingleBitCorruption()
+        {
+            var journalDirectory = Dir("checkpoint-crc-journal");
+            var checkpointDirectory = Dir("checkpoint-crc");
+            string path;
+
+            using (var journal = new WriteAheadJournal(journalDirectory, Session,
+                       DurabilityPolicy.SyncEachRecord))
+            {
+                journal.Append(JournalRecordType.Message, 1, 0, Payload(1));
+                var book = new SortedArrayBook(4);
+                book.Upsert(Side.Bid, -1, 100);
+                book.Upsert(Side.Ask, 1, 100);
+                path = Checkpoint.Write(checkpointDirectory, journal, 1, Session,
+                    new Dictionary<int, IOrderBook> { [1] = book });
+            }
+
+            var original = File.ReadAllBytes(path);
+
+            for (var index = 0; index < original.Length; index++)
+            {
+                for (var bit = 0; bit < 8; bit++)
+                {
+                    var damaged = (byte[])original.Clone();
+                    damaged[index] ^= (byte)(1 << bit);
+                    File.WriteAllBytes(path, damaged);
+
+                    var target = new Dictionary<int, IOrderBook>
+                    {
+                        [99] = new SortedArrayBook(1),
+                    };
+
+                    Assert.Throws<InvalidDataException>(() =>
+                        Checkpoint.Restore(path, _ => new SortedArrayBook(4), target, Session));
+                    Assert.True(target.ContainsKey(99), "failed restore mutated the target state");
+                }
+            }
+
+            File.WriteAllBytes(path, original);
+            Assert.Throws<InvalidDataException>(() => Checkpoint.Restore(path,
+                _ => new SortedArrayBook(4), new Dictionary<int, IOrderBook>(), Session + 1));
+        }
+
+        [Fact]
+        public void ASequenceZeroCheckpointCanBeDiscovered()
+        {
+            var journalDirectory = Dir("checkpoint-zero-journal");
+            var checkpointDirectory = Dir("checkpoint-zero");
+            var packet = SnapshotPacket(0);
+            string written;
+
+            using (var journal = new WriteAheadJournal(journalDirectory, Session,
+                       DurabilityPolicy.SyncEachRecord, initialSequence: 0))
+            {
+                journal.AppendPacket(packet);
+                written = Checkpoint.Write(checkpointDirectory, journal, 0, Session,
+                    new Dictionary<int, IOrderBook> { [1] = new SortedArrayBook(4) });
+            }
+
+            Assert.Equal(written, Checkpoint.FindLatest(checkpointDirectory));
+        }
+
+        [Fact]
+        public void SequencerExhaustionNeverWraps()
+        {
+            var sequencer = new Sequencer(ulong.MaxValue - 1);
+            Assert.Equal(ulong.MaxValue, sequencer.Next());
+            Assert.Throws<OverflowException>(() => sequencer.Next());
+            Assert.Equal(ulong.MaxValue, sequencer.Last);
+        }
+
+        [Fact]
+        public void SparseRangeIndexRefreshesTheLiveTail()
+        {
+            var directory = Dir("sparse-index");
+            using var journal = new WriteAheadJournal(directory, Session, DurabilityPolicy.OsBuffered);
+
+            for (ulong sequence = 1; sequence <= 1_000; sequence++)
+                journal.Append(JournalRecordType.Message, sequence, 0, Payload((int)sequence));
+
+            var reader = new JournalRangeReader(directory, stride: 32);
+            Assert.True(reader.IndexEntries >= 31);
+
+            for (ulong sequence = 1_001; sequence <= 2_000; sequence++)
+                journal.Append(JournalRecordType.Message, sequence, 0, Payload((int)sequence));
+
+            var result = reader.TryRead(Session, 1_990, 2_000, out var found);
+
+            Assert.Equal(JournalRangeResult.Success, result);
+            Assert.Equal(11, found.Count);
+            Assert.Equal(Enumerable.Range(1990, 11).Select(value => (ulong)value),
+                found.Select(message => message.Sequence));
+            Assert.True(reader.IndexEntries >= 62);
         }
     }
 }
