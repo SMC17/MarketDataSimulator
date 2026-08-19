@@ -1,20 +1,30 @@
-﻿using MarketData.Common;
+using MarketData.Common;
+using MarketData.Common.Books;
 using MarketData.Common.Server;
 using System;
 using System.Collections.Generic;
-using System.Data.Common;
 using System.Diagnostics;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace MarketData.Server
 {
-    internal class Orderbook : IDisposable
+    /// <summary>
+    /// Drives one instrument's book and publishes the resulting updates.
+    /// </summary>
+    /// <remarks>
+    /// Book state lives in an <see cref="IOrderBook"/>; this type only decides what happens next
+    /// and turns the result into a wire update. Keeping the two apart is what lets the book
+    /// implementations be swapped and compared without touching the simulation, and lets the
+    /// simulation be tested without a network.
+    /// </remarks>
+    internal sealed class Orderbook : IDisposable
     {
-        public Orderbook(Instrument instrument, IOrderbookService service)
+        public Orderbook(Instrument instrument, IOrderbookService service, string bookImplementation, int priceBand)
         {
             _instrument = instrument;
+            _simulator = new BookSimulator(
+                BookFactory.Create(bookImplementation, instrument.Specifications.Depth, priceBand), priceBand);
 
             _spinTask = GenerateUpdatesAsync(new WeakReference<Orderbook>(this), instrument, service, _disposedSource);
         }
@@ -25,10 +35,11 @@ namespace MarketData.Server
         /// than sleeping once per update. Update rates below 1/tick stay evenly spaced.
         /// </summary>
         private static readonly TimeSpan _tick = TimeSpan.FromMilliseconds(1);
+        private static readonly TimeSpan _lagResetThreshold = TimeSpan.FromMilliseconds(250);
 
         private static async Task GenerateUpdatesAsync(WeakReference<Orderbook> orderbook,
             Instrument instrument,
-            IOrderbookService service, 
+            IOrderbookService service,
             TaskCompletionSource disposedSource)
         {
             var random = new Random(instrument.Id * 7919 + DateTime.Now.Millisecond);
@@ -69,7 +80,7 @@ namespace MarketData.Server
                         while (due >= 1d)
                         {
                             due -= 1d;
-                            await PublishUpdateAsync(model, random, instrument, service).ConfigureAwait(false);
+                            await model.PublishUpdateAsync(random, service).ConfigureAwait(false);
                         }
                     }
                     finally
@@ -84,21 +95,30 @@ namespace MarketData.Server
             }
         }
 
-        private static ValueTask PublishUpdateAsync(Orderbook model, Random random, Instrument instrument, IOrderbookService service)
+        private ValueTask PublishUpdateAsync(Random random, IOrderbookService service)
         {
-            OrderbookUpdate update = null;
+            OrderbookUpdate update;
 
-            if (random.NextDouble() < instrument.Specifications.SnapshotProbability)
+            lock (_lock)
             {
-                var snapshot = model.Refresh(random, instrument);
-                update = new OrderbookUpdate(
-                    new OrderbookSnapshotUpdate(instrument.Id, snapshot.Bids, snapshot.Asks));
-            }
-            else
-            {
-                var incremental = model.Update(random, instrument);
-                update = new OrderbookUpdate(
-                    new OrderbookIncrementalUpdate(instrument.Id, incremental.UpdateType, incremental.Level));
+                if (_disposed)
+                    return ValueTask.CompletedTask;
+
+                if (random.NextDouble() < _instrument.Specifications.SnapshotProbability)
+                {
+                    _simulator.Refresh(random);
+                    update = new OrderbookUpdate(BuildSnapshot());
+                }
+                else
+                {
+                    var mutation = _simulator.Mutate(random);
+
+                    if (mutation.Kind == MutationKind.None)
+                        return ValueTask.CompletedTask;
+
+                    update = new OrderbookUpdate(new OrderbookIncrementalUpdate(
+                        _instrument.Id, ToUpdateType(mutation.Kind), ToLevel(mutation.Side, mutation.Level)));
+                }
             }
 
             // Stamped as late as possible before the update enters the dissemination path, so the
@@ -108,154 +128,55 @@ namespace MarketData.Server
             return service.OnOrderbookUpdateAsync(update);
         }
 
-        private static readonly TimeSpan _lagResetThreshold = TimeSpan.FromMilliseconds(250);
+        private OrderbookSnapshotUpdate BuildSnapshot()
+            => new OrderbookSnapshotUpdate(_instrument.Id, ReadSide(Side.Bid), ReadSide(Side.Ask));
 
-        private OrderbookLevelUpdate Update(Random random, Instrument instrument)
+        private IReadOnlyList<OrderbookLevel> ReadSide(Side side)
         {
-            lock (_disposedLock)
-            {
-                if (_disposed)
-                    return OrderbookLevelUpdate.Empty;
-            }
+            var levels = _simulator.ReadSide(side);
+            var converted = new List<OrderbookLevel>(levels.Count);
 
-            uint GetQuantity() => (uint)random.Next(1, 1000);
-            int GetPrice() => random.Next(-100, 100);
+            foreach (var level in levels)
+                converted.Add(ToLevel(side, level));
 
-            List<OrderbookLevel> levels = null;
-            SortedSet<OrderbookLevel> oppositeSortedLevels = null;
-            SortedSet<OrderbookLevel> sortedLevels = null;
-
-            var buy = random.Next(0, 2) == 0;
-
-            levels = buy ? _bidLevels : _askLevels;
-            oppositeSortedLevels = buy ? _asks : _bids;
-            sortedLevels = buy ? _bids : _asks;
-
-            var replace = levels.Count == instrument.Specifications.Depth;
-            var remove = levels.Count > 0
-                && random.NextDouble() < (levels.Count / (double)(instrument.Specifications.Depth + 1));
-
-            // The index is only meaningful for Remove/Replace, and Random.Next uses an exclusive
-            // upper bound, so it must be sampled from [0, Count) rather than [0, Count - 1).
-            if (remove)
-            {
-                return RemoveLevel(random.Next(0, levels.Count), levels, sortedLevels);
-            }
-            else if (replace)
-            {
-                return ReplaceLevel(random.Next(0, levels.Count), levels, sortedLevels, GetQuantity());
-            }
-            else
-            {
-                return AddLevel(levels, oppositeSortedLevels, sortedLevels, buy, GetPrice(), GetQuantity());
-            }    
+            return converted.AsReadOnly();
         }
 
-        private static OrderbookLevelUpdate AddLevel(List<OrderbookLevel> levels,
-            SortedSet<OrderbookLevel> oppositeSortedLevels,
-            SortedSet<OrderbookLevel> sortedLevels,
-            bool buy, int price, uint quantity)
+        private static OrderbookLevel ToLevel(Side side, PriceLevel level)
+            => new OrderbookLevel(level.Price, side == Side.Bid, level.Quantity);
+
+        private static OrderbookUpdateType ToUpdateType(MutationKind kind) => kind switch
         {
-            OrderbookLevel level = null;
-
-            if (!levels.Any())
-            {
-                if (!oppositeSortedLevels.Any())
-                {
-                    level = new OrderbookLevel(price, buy, quantity);
-                }
-                else
-                {
-                    // Both comparers order worst-price-first, so Max is the far side's touch on
-                    // either side. Seeding an ask from Min (the *worst* bid) crossed the book.
-                    var best = oppositeSortedLevels.Max;
-                    level = new OrderbookLevel(buy ? best.Price - 1 : best.Price + 1, buy, quantity);
-                }
-            }
-            else
-            {
-                var minimum = sortedLevels.Min;
-                level = new OrderbookLevel(buy ? minimum.Price - 1 : minimum.Price + 1, buy, quantity);
-            }
-
-            levels.Add(level);
-            sortedLevels.Add(level);
-
-            return new OrderbookLevelUpdate(OrderbookUpdateType.Add, level);
-        }
-
-        private static OrderbookLevelUpdate ReplaceLevel(int index, List<OrderbookLevel> levels, SortedSet<OrderbookLevel> sortedLevels, uint quantity)
-        {
-            var level = levels[index];
-            sortedLevels.Remove(level);
-            level = level with { Quantity = quantity };
-            levels[index] = level;
-            sortedLevels.Add(level);
-            return new OrderbookLevelUpdate(OrderbookUpdateType.Replace, level);
-        }
-        private static OrderbookLevelUpdate RemoveLevel(int index, List<OrderbookLevel> levels, SortedSet<OrderbookLevel> sortedLevels)
-        {
-            var level = levels[index];
-            levels.RemoveAt(index);
-            sortedLevels.Remove(level);
-            return new OrderbookLevelUpdate(OrderbookUpdateType.Remove, level);
-        }
-
-        private OrderbookSnapshotUpdate Refresh(Random random, Instrument instrument)
-        {
-            lock (_disposedLock)
-            {
-                if (_disposed)
-                    return OrderbookSnapshotUpdate.Empty;
-            }
-
-            _bids.Clear();
-            _bidLevels.Clear();
-            _asks.Clear();
-            _askLevels.Clear();
-
-            if (random.NextDouble() > 0.99)
-                return OrderbookSnapshotUpdate.Empty;
-
-            foreach (var i in Enumerable.Range(0 ,instrument.Specifications.Depth))
-                _ = Update(random, instrument);
-
-            return new OrderbookSnapshotUpdate(_instrument.Id, _bidLevels.AsReadOnly(), _askLevels.AsReadOnly());
-        }
+            MutationKind.Add => OrderbookUpdateType.Add,
+            MutationKind.Replace => OrderbookUpdateType.Replace,
+            MutationKind.Remove => OrderbookUpdateType.Remove,
+            _ => OrderbookUpdateType.Invalid,
+        };
 
         public OrderbookSnapshotUpdate GetSnapshot()
         {
-            lock (_disposedLock)
-            {
-                if (_disposed)
-                    return OrderbookSnapshotUpdate.Empty;
-
-                return new OrderbookSnapshotUpdate(_instrument.Id, _bidLevels.AsReadOnly(), _askLevels.AsReadOnly());
-            }
+            lock (_lock)
+                return _disposed ? OrderbookSnapshotUpdate.Empty : BuildSnapshot();
         }
 
         public void Dispose()
         {
-            lock (_disposedLock)
+            lock (_lock)
             {
                 if (_disposed)
                     return;
 
                 _disposed = true;
-
-                _disposedSource.TrySetResult();
-                _spinTask.GetAwaiter().GetResult();
             }
+
+            _disposedSource.TrySetResult();
+            _spinTask.GetAwaiter().GetResult();
         }
 
-
-        private readonly Instrument _instrument = null;
-        private readonly List<OrderbookLevel> _bidLevels = new List<OrderbookLevel>();
-        private readonly List<OrderbookLevel> _askLevels = new List<OrderbookLevel>();
-        private readonly SortedSet<OrderbookLevel> _bids = new SortedSet<OrderbookLevel>(OrderbookLevelComparer.BidComparer);
-        private readonly SortedSet<OrderbookLevel> _asks = new SortedSet<OrderbookLevel>(OrderbookLevelComparer.AskComparer);
-        private readonly Task _spinTask = null;
-        private readonly object _disposedLock = new object();
+        private readonly Instrument _instrument;
+        private readonly BookSimulator _simulator;
+        private readonly Task _spinTask;
+        private readonly object _lock = new object();
         private bool _disposed;
         private readonly TaskCompletionSource _disposedSource = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     }

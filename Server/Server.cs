@@ -5,6 +5,7 @@ using MarketData.Server.Configuration;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Net;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -16,18 +17,47 @@ namespace MarketData.Server
         public Server(ServerConfiguration config)
         {
             _config = config;
-            _service = new OrderbookService(config.Port, this, config.VerboseLogging, config.SubscriberQueueCapacity);
+            _service = CreateService(config);
 
             foreach (var instrument in config.Instruments)
-                _orderbooks.Add(instrument.Id, new Orderbook(instrument, _service));
+                _orderbooks.Add(instrument.Id, new Orderbook(instrument, _service, config.BookImplementation, config.PriceBand));
         }
+
+        /// <summary>
+        /// Selects the dissemination transport. The two are interchangeable behind
+        /// <see cref="IOrderbookService"/>, which is what makes them directly comparable: the
+        /// matching engine above is byte-for-byte the same in both configurations, so a
+        /// measured difference is attributable to the transport and nothing else.
+        /// </summary>
+        private IOrderbookService CreateService(ServerConfiguration config)
+        {
+            if (!config.Multicast.Enabled)
+                return new OrderbookService(config.Port, this, config.VerboseLogging, config.SubscriberQueueCapacity);
+
+            return new MulticastOrderbookService(
+                IPAddress.Parse(config.Multicast.Group),
+                config.Multicast.Port,
+                IPAddress.Parse(config.Multicast.Interface),
+                config.Multicast.MaxBatch,
+                TimeSpan.FromMilliseconds(config.Multicast.FlushIntervalMs),
+                TimeSpan.FromSeconds(config.Multicast.SnapshotIntervalSeconds),
+                this);
+        }
+
+        public IReadOnlyCollection<int> InstrumentIds => _orderbooks.Keys;
 
         public async Task RunAsync(CancellationToken token)
         {
             await _service.StartAsync().ConfigureAwait(false);
 
-            Console.WriteLine($"Listening on {_config.Port} | instruments: " + string.Join(", ",
-                _config.Instruments.Select(i => $"{i.Symbol}(depth {i.Specifications.Depth}, {i.Specifications.UpdatesPerSecond:0.##}/s)")));
+            Console.WriteLine(
+                (_config.Multicast.Enabled
+                    ? $"Publishing to multicast {_config.Multicast.Group}:{_config.Multicast.Port} " +
+                      $"(batch {_config.Multicast.MaxBatch}, snapshot every {_config.Multicast.SnapshotIntervalSeconds}s)"
+                    : $"Listening on {_config.Port}")
+                + " | instruments: " + string.Join(", ",
+                _config.Instruments.Select(i => $"{i.Symbol}(depth {i.Specifications.Depth}, {i.Specifications.UpdatesPerSecond:0.##}/s)"))
+                + $" | book: {_config.BookImplementation}");
 
             using var lifetime = _config.RunForSeconds > 0
                 ? new CancellationTokenSource(TimeSpan.FromSeconds(_config.RunForSeconds))
