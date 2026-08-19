@@ -72,6 +72,38 @@ Tests/            Property-based and differential test suite
 bench/            Sweep runners and raw results
 ```
 
+### Validated against real NASDAQ data
+
+The strongest correctness claim here is not self-referential. A real AMZN session from
+2012-06-21 — 269,748 order events from LOBSTER's reconstruction of the NASDAQ ITCH feed,
+with the exchange's own resulting order book after every one of them:
+
+> **All four book implementations reproduce NASDAQ's published book exactly on 269,747 of
+> 269,747 transitions — 100.0000%.**
+
+Getting there took two attempts, and the first is the more instructive. A cumulative replay
+matched 0.04% of rows, which looked like a serious bug — until an independent reconstruction
+in Python agreed with the C# to the exact row count at every depth. Two implementations do not
+share a bug that precisely, so the experiment was wrong, not the code: **a LOBSTER level-10
+message file only contains events touching the top ten levels**, so cumulative reconstruction
+is impossible by construction. The right test is the one a feed handler faces — *given the
+book as it stands, does the next message produce the book the exchange publishes next?*
+
+Real data also found what synthetic data could not: `LadderBook.Clear` was a memset over the
+whole price band (≈1 MB at NASDAQ's $0.0001 granularity), harmless at startup and ruinous per
+message — now 5.0× faster.
+
+The parser sustains **12.5M messages/sec at 496 MiB/s with zero allocation**, keeping
+timestamps as integer nanoseconds because a `double` cannot hold 34200.123456789 and
+arithmetic on it would silently reorder events.
+
+```bash
+./scripts/fetch-lobster.sh                                    # ~71 MiB, not committed
+dotnet run --project Bench -c Release -- replay --data data/lobster
+```
+
+A 20,000-message slice is committed, so CI validates against real market data offline.
+
 ### Matching engine
 
 The feed is the output of a real matching engine, not a random walk over price levels. Orders
@@ -119,6 +151,7 @@ could be measured rather than argued:
 | `SortedArrayBook` | O(log d) search + O(d) shift | O(1) | O(1) contiguous copy | Fastest at display depths |
 | `LadderBook` | O(1) | O(1) amortised, bit-scan | O(d) bit-scan per level | Needs a bounded price band |
 | `TreeBook` | O(log d) | O(log d) | O(d) pointer chase | Unbounded, sparse price spaces |
+| `VectorizedBook` | branch-free SIMD count | O(1) | O(d) re-interleave | Struct-of-arrays, AVX-512 |
 
 Measured, 4 vCPU, minimum of 7 trials over 200k operations:
 
@@ -164,7 +197,7 @@ which turns silent loss into detectable loss, and the consumer:
 
 ### Testing
 
-82 tests, all deterministic and seeded. The interesting ones are not unit tests:
+103 tests, all deterministic and seeded. The interesting ones are not unit tests:
 
 - **Differential testing** — random operation streams are applied to all three
   book implementations and their state compared after *every* operation, so a
@@ -184,6 +217,7 @@ which turns silent loss into detectable loss, and the consumer:
 - **Conservation** — every unit submitted is filled, resting, or cancelled.
   Nothing is created or destroyed.
 - **Allocation budgets** — zero bytes, enforced.
+- **Real market data** — NASDAQ's own published book, per message.
 
 These found five real bugs the unit tests did not, each recorded in the commit
 that fixed it — a stale-cache bug in the ladder's depth cap, a malformed packet
@@ -202,7 +236,7 @@ place and cannot be got wrong independently twice.
 
 ```bash
 dotnet build MarketDataSimulator.sln -c Release
-dotnet test Tests/Tests.csproj -c Release       # 82 tests
+dotnet test Tests/Tests.csproj -c Release       # 103 tests
 ./scripts/smoke.sh                              # end-to-end, both transports
 ```
 

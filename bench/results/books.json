@@ -1,149 +1,162 @@
 [
   {
-    "Depth": 5,
+    "Depth": 10,
     "Implementation": "SortedArrayBook",
-    "MixedNsPerOp": 20.81,
-    "TouchNsPerOp": 2.67,
-    "SnapshotNsPerOp": 8.11
+    "MixedNsPerOp": 24.89,
+    "TouchNsPerOp": 2.84,
+    "SnapshotNsPerOp": 8.44,
+    "SnapshotBytesPerOp": 0
   },
   {
-    "Depth": 5,
+    "Depth": 10,
+    "Implementation": "VectorizedBook",
+    "MixedNsPerOp": 41.73,
+    "TouchNsPerOp": 11.89,
+    "SnapshotNsPerOp": 177.12,
+    "SnapshotBytesPerOp": 0
+  },
+  {
+    "Depth": 10,
     "Implementation": "LadderBook",
-    "MixedNsPerOp": 27.66,
-    "TouchNsPerOp": 13.4,
-    "SnapshotNsPerOp": 129.51
+    "MixedNsPerOp": 32.25,
+    "TouchNsPerOp": 13.12,
+    "SnapshotNsPerOp": 235.48,
+    "SnapshotBytesPerOp": 0
   },
   {
-    "Depth": 5,
+    "Depth": 10,
     "Implementation": "TreeBook",
-    "MixedNsPerOp": 40.84,
-    "TouchNsPerOp": 36.24,
-    "SnapshotNsPerOp": 381.33
+    "MixedNsPerOp": 44.53,
+    "TouchNsPerOp": 39.71,
+    "SnapshotNsPerOp": 158.32,
+    "SnapshotBytesPerOp": 104
   },
   {
-    "Depth": 10,
+    "Depth": 32,
     "Implementation": "SortedArrayBook",
-    "MixedNsPerOp": 25.59,
-    "TouchNsPerOp": 2.64,
-    "SnapshotNsPerOp": 8.23
+    "MixedNsPerOp": 32.72,
+    "TouchNsPerOp": 2.79,
+    "SnapshotNsPerOp": 8.33,
+    "SnapshotBytesPerOp": 0
   },
   {
-    "Depth": 10,
+    "Depth": 32,
+    "Implementation": "VectorizedBook",
+    "MixedNsPerOp": 21.85,
+    "TouchNsPerOp": 4.36,
+    "SnapshotNsPerOp": 12.56,
+    "SnapshotBytesPerOp": 0
+  },
+  {
+    "Depth": 32,
     "Implementation": "LadderBook",
     "MixedNsPerOp": 17.92,
-    "TouchNsPerOp": 4.78,
-    "SnapshotNsPerOp": 38.14
+    "TouchNsPerOp": 3.47,
+    "SnapshotNsPerOp": 37.65,
+    "SnapshotBytesPerOp": 0
   },
   {
-    "Depth": 10,
+    "Depth": 32,
     "Implementation": "TreeBook",
-    "MixedNsPerOp": 46.65,
-    "TouchNsPerOp": 6.43,
-    "SnapshotNsPerOp": 153.03
+    "MixedNsPerOp": 62.63,
+    "TouchNsPerOp": 8.09,
+    "SnapshotNsPerOp": 177.34,
+    "SnapshotBytesPerOp": 136
   },
   {
-    "Depth": 25,
+    "Depth": 64,
     "Implementation": "SortedArrayBook",
-    "MixedNsPerOp": 32.91,
-    "TouchNsPerOp": 4.57,
-    "SnapshotNsPerOp": 8.31
+    "MixedNsPerOp": 37.97,
+    "TouchNsPerOp": 4.02,
+    "SnapshotNsPerOp": 8.82,
+    "SnapshotBytesPerOp": 0
   },
   {
-    "Depth": 25,
+    "Depth": 64,
+    "Implementation": "VectorizedBook",
+    "MixedNsPerOp": 24.21,
+    "TouchNsPerOp": 3.81,
+    "SnapshotNsPerOp": 10.52,
+    "SnapshotBytesPerOp": 0
+  },
+  {
+    "Depth": 64,
     "Implementation": "LadderBook",
-    "MixedNsPerOp": 19.81,
-    "TouchNsPerOp": 5.3,
-    "SnapshotNsPerOp": 39.08
+    "MixedNsPerOp": 20.29,
+    "TouchNsPerOp": 4.9,
+    "SnapshotNsPerOp": 38.67,
+    "SnapshotBytesPerOp": 0
   },
   {
-    "Depth": 25,
+    "Depth": 64,
     "Implementation": "TreeBook",
-    "MixedNsPerOp": 64.68,
-    "TouchNsPerOp": 8.47,
-    "SnapshotNsPerOp": 168.91
+    "MixedNsPerOp": 70.6,
+    "TouchNsPerOp": 9.03,
+    "SnapshotNsPerOp": 240.11,
+    "SnapshotBytesPerOp": 152
   },
   {
-    "Depth": 50,
+    "Depth": 128,
     "Implementation": "SortedArrayBook",
-    "MixedNsPerOp": 35.17,
-    "TouchNsPerOp": 6.78,
-    "SnapshotNsPerOp": 12.87
+    "MixedNsPerOp": 41.7,
+    "TouchNsPerOp": 1.58,
+    "SnapshotNsPerOp": 5,
+    "SnapshotBytesPerOp": 0
   },
   {
-    "Depth": 50,
+    "Depth": 128,
+    "Implementation": "VectorizedBook",
+    "MixedNsPerOp": 69.41,
+    "TouchNsPerOp": 4.09,
+    "SnapshotNsPerOp": 11.78,
+    "SnapshotBytesPerOp": 0
+  },
+  {
+    "Depth": 128,
     "Implementation": "LadderBook",
-    "MixedNsPerOp": 21.04,
-    "TouchNsPerOp": 2.28,
-    "SnapshotNsPerOp": 36.48
+    "MixedNsPerOp": 21.6,
+    "TouchNsPerOp": 5,
+    "SnapshotNsPerOp": 46.31,
+    "SnapshotBytesPerOp": 0
   },
   {
-    "Depth": 50,
+    "Depth": 128,
     "Implementation": "TreeBook",
-    "MixedNsPerOp": 76.07,
-    "TouchNsPerOp": 9.24,
-    "SnapshotNsPerOp": 343.5
-  },
-  {
-    "Depth": 100,
-    "Implementation": "SortedArrayBook",
-    "MixedNsPerOp": 39.16,
-    "TouchNsPerOp": 4.08,
-    "SnapshotNsPerOp": 7.82
-  },
-  {
-    "Depth": 100,
-    "Implementation": "LadderBook",
-    "MixedNsPerOp": 20.75,
-    "TouchNsPerOp": 2.15,
-    "SnapshotNsPerOp": 35.76
-  },
-  {
-    "Depth": 100,
-    "Implementation": "TreeBook",
-    "MixedNsPerOp": 82.39,
-    "TouchNsPerOp": 10.19,
-    "SnapshotNsPerOp": 220.93
-  },
-  {
-    "Depth": 250,
-    "Implementation": "SortedArrayBook",
-    "MixedNsPerOp": 42.52,
-    "TouchNsPerOp": 3.96,
-    "SnapshotNsPerOp": 7.27
-  },
-  {
-    "Depth": 250,
-    "Implementation": "LadderBook",
-    "MixedNsPerOp": 21.33,
-    "TouchNsPerOp": 2.23,
-    "SnapshotNsPerOp": 34.69
-  },
-  {
-    "Depth": 250,
-    "Implementation": "TreeBook",
-    "MixedNsPerOp": 121.54,
-    "TouchNsPerOp": 11.73,
-    "SnapshotNsPerOp": 981.2
+    "MixedNsPerOp": 76.67,
+    "TouchNsPerOp": 10.55,
+    "SnapshotNsPerOp": 201.82,
+    "SnapshotBytesPerOp": 168
   },
   {
     "Depth": 1000,
     "Implementation": "SortedArrayBook",
-    "MixedNsPerOp": 53.11,
-    "TouchNsPerOp": 4.06,
-    "SnapshotNsPerOp": 7.7
+    "MixedNsPerOp": 54.16,
+    "TouchNsPerOp": 1.57,
+    "SnapshotNsPerOp": 5.18,
+    "SnapshotBytesPerOp": 0
+  },
+  {
+    "Depth": 1000,
+    "Implementation": "VectorizedBook",
+    "MixedNsPerOp": 44.58,
+    "TouchNsPerOp": 4.27,
+    "SnapshotNsPerOp": 10.87,
+    "SnapshotBytesPerOp": 0
   },
   {
     "Depth": 1000,
     "Implementation": "LadderBook",
-    "MixedNsPerOp": 28.81,
-    "TouchNsPerOp": 2.32,
-    "SnapshotNsPerOp": 34.77
+    "MixedNsPerOp": 28.61,
+    "TouchNsPerOp": 4.91,
+    "SnapshotNsPerOp": 41.18,
+    "SnapshotBytesPerOp": 0
   },
   {
     "Depth": 1000,
     "Implementation": "TreeBook",
-    "MixedNsPerOp": 111.01,
-    "TouchNsPerOp": 11.86,
-    "SnapshotNsPerOp": 1013.29
+    "MixedNsPerOp": 105.12,
+    "TouchNsPerOp": 11.81,
+    "SnapshotNsPerOp": 240.45,
+    "SnapshotBytesPerOp": 200
   }
 ]

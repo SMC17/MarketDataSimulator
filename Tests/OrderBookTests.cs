@@ -14,6 +14,7 @@ namespace MarketData.Tests
         public static IEnumerable<object[]> Implementations()
         {
             yield return new object[] { nameof(SortedArrayBook) };
+            yield return new object[] { nameof(VectorizedBook) };
             yield return new object[] { nameof(LadderBook) };
             yield return new object[] { nameof(TreeBook) };
         }
@@ -21,6 +22,7 @@ namespace MarketData.Tests
         private static IOrderBook Create(string implementation, int depth = Depth) => implementation switch
         {
             nameof(SortedArrayBook) => new SortedArrayBook(depth),
+            nameof(VectorizedBook) => new VectorizedBook(depth),
             nameof(LadderBook) => new LadderBook(depth, BookOperations.MinPrice, BookOperations.MaxPrice),
             nameof(TreeBook) => new TreeBook(depth),
             _ => throw new ArgumentOutOfRangeException(nameof(implementation), implementation, null),
@@ -188,6 +190,7 @@ namespace MarketData.Tests
                     var books = new (string Name, IOrderBook Book)[]
                     {
                         (nameof(SortedArrayBook), Create(nameof(SortedArrayBook))),
+                        (nameof(VectorizedBook), Create(nameof(VectorizedBook))),
                         (nameof(LadderBook), Create(nameof(LadderBook))),
                         (nameof(TreeBook), Create(nameof(TreeBook))),
                     };

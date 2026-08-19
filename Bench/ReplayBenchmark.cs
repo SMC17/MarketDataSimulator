@@ -71,7 +71,7 @@ namespace MarketData.Bench
 
             var transitionReports = new List<ReplayReport>();
 
-            foreach (var name in new[] { "SortedArray", "Ladder", "Tree" })
+            foreach (var name in new[] { "SortedArray", "Vectorized", "Ladder", "Tree" })
             {
                 ReplayResult best = null;
 
@@ -106,7 +106,7 @@ namespace MarketData.Bench
             Console.WriteLine($"{"Implementation",18} {"Rows compared",14} {"Matched",14} {"Match rate",11} {"Msgs/s",12} {"First mismatch",15}");
             Console.WriteLine(new string('-', 92));
 
-            foreach (var name in new[] { "SortedArray", "Ladder", "Tree" })
+            foreach (var name in new[] { "SortedArray", "Vectorized", "Ladder", "Tree" })
             {
                 ReplayResult best = null;
 
