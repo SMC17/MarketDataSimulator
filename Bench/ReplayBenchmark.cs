@@ -183,7 +183,7 @@ namespace MarketData.Bench
             // Parser throughput on its own, so reconstruction cost can be separated from parse cost.
             var parseRate = MeasureParseThroughput(messages, trials);
             Console.WriteLine();
-            Console.WriteLine($"Parser alone: {parseRate.MessagesPerSecond:N0} msg/s, {parseRate.MegabytesPerSecond:N1} MiB/s, {parseRate.BytesPerMessage} B/msg allocated");
+            Console.WriteLine($"Parser alone: {parseRate.MessagesPerSecond:N0} msg/s, {parseRate.MebibytesPerSecond:N1} MiB/s, {parseRate.BytesPerMessage} B/msg allocated");
 
             if (outputPath is not null)
             {
@@ -309,7 +309,7 @@ namespace MarketData.Bench
             long RowsMatched, double MatchRate, double MessagesPerSecond, long FirstMismatchRow,
             string FirstMismatchDetail, long NegativeLevels, long HiddenExecutions);
 
-        private record ParserReport(double MessagesPerSecond, double MegabytesPerSecond, long BytesPerMessage);
+        private record ParserReport(double MessagesPerSecond, double MebibytesPerSecond, long BytesPerMessage);
 
         private record DepthPoint(int Levels, long RowsExact, double Share);
     }

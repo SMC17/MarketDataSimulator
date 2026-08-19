@@ -80,12 +80,27 @@ excluding them. Load is generated open-loop at a fixed rate: the generator does
 not wait for subscribers, so a slow system produces a backlog rather than a
 reduced offered rate.
 
+**Delivered** — the share of the updates the server *actually published* that
+reached subscribers, computed as `messages received per second ÷ (updates
+published per second × subscribers)`, with the published rate read back from the
+server's own telemetry rather than assumed.
+
+This is deliberately not measured against the rate the harness was configured
+for, and the distinction is not pedantic. The update generator does not always
+hit its configured rate — on a slower host it produces 90 updates/s where 100
+were asked for — and a ratio computed against the nominal rate books that
+shortfall as though subscribers had lost data. Those are opposite failures: one
+is the system under test failing, the other is the measuring instrument falling
+short, and a single number that cannot tell them apart is not evidence about
+either. They are reported as separate columns, `Delivered` and `Gen. rate`, and
+only the first is part of the sustained criterion.
+
 **Sustained** — a run only counts if all of the following hold:
 
 | Criterion | Why it matters |
 |---|---|
 | every subscriber stayed connected for the whole run | a run that sheds subscribers is not serving them |
-| delivered ≥ 99% of `subscribers × feed rate` | every subscriber saw the whole feed |
+| delivered ≥ 99% of `subscribers × published rate` | every subscriber saw the whole feed |
 | zero dropped updates | no subscriber overflowed its outbound queue |
 | zero sequence gaps (multicast) | no subscriber silently lost data |
 | zero stale subscribers (multicast) | no subscriber gave up on its book |
