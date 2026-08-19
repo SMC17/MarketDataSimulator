@@ -193,9 +193,28 @@ def run_case(args, subscribers, rate, tag):
         "BenchOutput": bench_output.strip().splitlines()[-4:],
     })
 
-    expected = rate * args.instruments * result["ConnectedSubscribers"]
-    result["ExpectedMessagesPerSecond"] = expected
-    result["DeliveryRatio"] = round(result["MessagesPerSecond"] / expected, 4) if expected else None
+    # Two different ratios, because two different things can go wrong.
+    #
+    # DeliveryRatio asks whether the fan-out delivered what the engine produced. It
+    # divides by the rate the server actually published, read back from the server's
+    # own telemetry.
+    #
+    # GeneratorRateFidelity asks whether the harness produced what it was asked to.
+    # On a slower host the update generator undershoots its configured rate, and a
+    # delivery ratio computed against the *nominal* rate books that shortfall as
+    # subscriber loss - reporting the system as failing when the measuring
+    # instrument is the thing falling short. Keeping them apart is what makes the
+    # sustained/not-sustained judgement mean anything.
+    connected = result["ConnectedSubscribers"]
+    nominal = rate * args.instruments
+    produced = result.get("ServerMeanDisseminatedPerSecond")
+
+    result["NominalMessagesPerSecond"] = nominal * connected
+    result["ExpectedMessagesPerSecond"] = round(produced * connected, 1) if produced else None
+    result["DeliveryRatio"] = (
+        round(result["MessagesPerSecond"] / (produced * connected), 4)
+        if produced and connected else None)
+    result["GeneratorRateFidelity"] = round(produced / nominal, 4) if produced and nominal else None
     out_path.write_text(json.dumps(result, indent=2))
     return result
 

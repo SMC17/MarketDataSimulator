@@ -144,6 +144,13 @@ def run_case(args, subscribers, rate):
     # entirely independent of how many subscribers are listening.
     result["ServerPacketsPerSecond"] = (
         round(sum(s[5] for s in stats) / len(stats), 1) if stats else None)
+    # The rate the engine actually produced, so delivery can be judged against what
+    # existed rather than against the rate the harness was configured for. On a
+    # slower host the generator undershoots, and dividing by the nominal rate would
+    # book that as subscriber loss.
+    result["ServerMeanDisseminatedPerSecond"] = (
+        round(sum(s[4] for s in stats) / len(stats), 1) if stats else None)
+    result["ServerDroppedUpdates"] = max((s[6] for s in stats), default=None)
     out_path.write_text(json.dumps(result, indent=2))
     return result
 

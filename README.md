@@ -62,7 +62,7 @@ validity are in **[BENCHMARKS.md](BENCHMARKS.md)**.
 
 ```
 Common/Matching/  Order-by-order book, price-time matching, depth projection
-Common/Books/     Three aggregated book implementations behind one interface
+Common/Books/     Four aggregated book implementations behind one interface
 Common/Feed/      Binary wire format, multicast publisher, decoder
 Common/Server/    Unicast (gRPC) and multicast dissemination services
 Server/           The simulated matching engine and its configuration
@@ -98,7 +98,7 @@ timestamps as integer nanoseconds because a `double` cannot hold 34200.123456789
 arithmetic on it would silently reorder events.
 
 ```bash
-./scripts/fetch-lobster.sh                                    # ~71 MiB, not committed
+./scripts/fetch-lobster.sh                                    # ~185 MiB, not committed
 dotnet run --project Bench -c Release -- replay --data data/lobster
 ```
 
@@ -166,7 +166,7 @@ land at the worst possible moment.
 
 ### Order books
 
-Three implementations of the same depth-limited book, chosen so the trade-offs
+Four implementations of the same depth-limited book, chosen so the trade-offs
 could be measured rather than argued:
 
 | | Update | Touch | Publish top-10 | Notes |
@@ -222,7 +222,7 @@ which turns silent loss into detectable loss, and the consumer:
 
 117 tests, all deterministic and seeded. The interesting ones are not unit tests:
 
-- **Differential testing** — random operation streams are applied to all three
+- **Differential testing** — random operation streams are applied to all four
   book implementations and their state compared after *every* operation, so a
   divergence is attributed to the operation that caused it.
 - **Property-based testing** with **automatic shrinking** — failures are reduced
@@ -266,8 +266,8 @@ dotnet test Tests/Tests.csproj -c Release       # 117 tests
 Run the simulator and a reference subscriber:
 
 ```bash
-cd Server/bin/Release/net6.0 && dotnet Server.dll        # unicast gRPC on :14000
-cd Client/bin/Release/net6.0 && dotnet Client.dll        # then type: Subscribe 1
+cd Server/bin/Release/net8.0 && dotnet Server.dll        # unicast gRPC on :14000
+cd Client/bin/Release/net8.0 && dotnet Client.dll        # then type: Subscribe 1
 ```
 
 Benchmarks:
@@ -277,7 +277,7 @@ Benchmarks:
 dotnet run --project Bench -c Release -- books --depths 10,100,1000
 
 # Matching engine micro-benchmark
-dotnet run --project Bench -c Release -- matching --sizes 1000,10000,1000000
+dotnet run --project Bench -c Release -- matching --sizes 1000,10000,100000
 
 # Unicast dissemination sweep
 python3 bench/run.py --subscribers 100 200 400 600 --rates 50 --tag unicast
@@ -298,7 +298,7 @@ raw per-run JSON lands in `bench/results/`.
 ### Configuration
 
 `Server/appsettings.json`, or any path passed as the first argument. Notable
-settings: `BookImplementation` (`SortedArray`, `Ladder`, `Tree`), per-instrument
+settings: `BookImplementation` (`SortedArray`, `Vectorized`, `Ladder`, `Tree`), per-instrument
 `Depth` / `UpdatesPerSecond` / `SnapshotProbability`, and the `Multicast` block
 (`Enabled`, `Group`, `MaxBatch`, `SnapshotIntervalSeconds`).
 

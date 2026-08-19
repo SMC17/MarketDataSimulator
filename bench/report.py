@@ -15,10 +15,26 @@ MAX_OUTBOUND_QUEUE = 100
 MAX_UPDATE_QUEUE = 100
 
 
+def delivery(row):
+    """Share of what the server actually published that reached subscribers.
+
+    Recomputed from the server's own telemetry rather than trusted from the file,
+    so results recorded before DeliveryRatio was corrected to divide by the
+    produced rate instead of the nominal one still read correctly here.
+    """
+    produced = row.get("ServerMeanDisseminatedPerSecond")
+    connected = row.get("ConnectedSubscribers") or 0
+
+    if produced and connected:
+        return row["MessagesPerSecond"] / (produced * connected)
+
+    return row.get("DeliveryRatio")
+
+
 def sustained(row):
     return (row.get("FailedSubscribers", 0) == 0
             and row["ConnectedSubscribers"] == row["RequestedSubscribers"]
-            and (row.get("DeliveryRatio") or 0) >= MIN_DELIVERY
+            and (delivery(row) or 0) >= MIN_DELIVERY
             and (row.get("ServerDroppedUpdates") or 0) == 0
             and (row.get("ServerMaxOutboundQueued") or 0) <= MAX_OUTBOUND_QUEUE
             and (row.get("ServerMaxQueueDepth") or 0) <= MAX_UPDATE_QUEUE)
@@ -48,7 +64,7 @@ def table(rows):
             f"| {row['P99Ms']:.1f} "
             f"| {row['P999Ms']:.1f} "
             f"| {row['MaxMs']:.1f} "
-            f"| {(row.get('DeliveryRatio') or 0) * 100:.1f}% "
+            f"| {(delivery(row) or 0) * 100:.1f}% "
             f"| {row.get('ServerCpuPercent')}% "
             f"| {row.get('HostCpuPercent')}% "
             f"| {'yes' if sustained(row) else 'NO'} |")
