@@ -58,6 +58,16 @@ namespace MarketData.Tests
             return data;
         }
 
+        [Fact]
+        public void DiscoversCompressedSamplePairs()
+        {
+            var directory = Path.Combine(AppContext.BaseDirectory, "data");
+            var sessions = LobsterSessions.Discover(directory);
+
+            Assert.Equal(new[] { "AMZN", "MSFT" }, sessions.Select(session => session.Symbol));
+            Assert.Equal(new[] { 10, 5 }, sessions.Select(session => session.Levels));
+        }
+
         /// <summary>
         /// Given the book as the exchange published it, applying the next real message must
         /// produce the book the exchange published next - for every message in the session.
@@ -117,6 +127,55 @@ namespace MarketData.Tests
             }
 
             Assert.True(hidden > 0, "the slice should contain hidden executions to exercise this");
+        }
+
+        [Fact]
+        public void CumulativeReplaySeedsFromTheFirstPublishedRow()
+        {
+            var messages = Load("AMZN_message_20k.csv.gz");
+            var reference = Load("AMZN_orderbook_20k.csv.gz");
+            var book = new SortedArrayBook(4096);
+
+            var result = LobsterReplay.Replay(messages, reference, book);
+
+            Assert.Equal(19_999, result.RowsCompared);
+            Assert.True(result.FirstMismatchRow != 1,
+                $"replay compared before its first seed: {result.FirstMismatchDetail}");
+            Assert.True(result.RowsMatched > 0 && result.MatchedByDepth[0] > 5_000,
+                $"expected meaningful cumulative agreement, got {result.RowsMatched} full rows and " +
+                $"{result.MatchedByDepth[0]} correct touches");
+        }
+
+        [Fact]
+        public void LevelOneTransitionCannotPassWithoutMatchingItsOnlyLevel()
+        {
+            var messages = System.Text.Encoding.ASCII.GetBytes(
+                "1.0,1,1,100,1000,1\n2.0,2,1,10,1000,1\n");
+            var incorrectReference = System.Text.Encoding.ASCII.GetBytes(
+                "1100,100,1000,100\n1100,100,1000,91\n");
+
+            var result = LobsterReplay.ReplayTransitions(messages, incorrectReference,
+                new SortedArrayBook(8));
+
+            Assert.Equal(1, result.RowsCompared);
+            Assert.Equal(0, result.RowsMatched);
+            Assert.Equal(2, result.FirstMismatchRow);
+        }
+
+        [Fact]
+        public void LevelOneDeletionIsMarkedUnverifiable()
+        {
+            var messages = System.Text.Encoding.ASCII.GetBytes(
+                "1.0,1,1,100,1000,1\n2.0,3,1,100,1000,1\n");
+            var reference = System.Text.Encoding.ASCII.GetBytes(
+                "1100,100,1000,100\n1100,100,900,100\n");
+
+            var result = LobsterReplay.ReplayTransitions(messages, reference,
+                new SortedArrayBook(8));
+
+            Assert.Equal(0, result.RowsCompared);
+            Assert.Equal(0, result.RowsMatched);
+            Assert.Equal(1, result.Unverifiable);
         }
 
         /// <summary>

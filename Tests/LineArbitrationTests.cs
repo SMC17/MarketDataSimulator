@@ -13,6 +13,7 @@ namespace MarketData.Tests
     public class LineArbitrationTests
     {
         private const int Instrument = 1;
+        private const ulong Session = 0xAB;
 
         private static FeedDecoder NewDecoder() =>
             new FeedDecoder(_ => BookFactory.Create("SortedArray", 10, 512));
@@ -23,7 +24,17 @@ namespace MarketData.Tests
             var offset = FeedProtocol.HeaderSize;
             offset += FeedProtocol.WriteIncremental(buffer.AsSpan(offset), FeedMessageType.Add, Instrument,
                 Side.Bid, new PriceLevel(price, 100));
-            FeedProtocol.WriteHeader(buffer, 1, sequence, 0);
+            FeedProtocol.WriteHeader(buffer.AsSpan(0, offset), 1, Session, sequence, 0);
+            return buffer.AsSpan(0, offset).ToArray();
+        }
+
+        private static byte[] EmptySnapshot()
+        {
+            var buffer = new byte[FeedProtocol.MaxPacketSize];
+            var offset = FeedProtocol.HeaderSize;
+            offset += FeedProtocol.WriteSnapshot(buffer.AsSpan(offset), Instrument,
+                Array.Empty<PriceLevel>(), Array.Empty<PriceLevel>());
+            FeedProtocol.WriteHeader(buffer.AsSpan(0, offset), 1, Session, 0, 0);
             return buffer.AsSpan(0, offset).ToArray();
         }
 
@@ -31,7 +42,8 @@ namespace MarketData.Tests
         public void SecondCopyOfAPacketIsDiscarded()
         {
             var decoder = NewDecoder();
-            var packet = Packet(0, -1);
+            decoder.Consume(EmptySnapshot());
+            var packet = Packet(1, -1);
 
             decoder.Consume(packet); // A line
             decoder.Consume(packet); // B line, identical
@@ -42,13 +54,29 @@ namespace MarketData.Tests
         }
 
         [Fact]
+        public void ConflictingCopyAtTheSameSequenceIsReported()
+        {
+            var decoder = NewDecoder();
+            decoder.Consume(EmptySnapshot());
+
+            decoder.Consume(Packet(1, -1));
+            decoder.Consume(Packet(1, -2));
+
+            Assert.Equal(1, decoder.Statistics.Duplicates);
+            Assert.Equal(1, decoder.Statistics.LineDivergences);
+            Assert.Equal(new[] { -1 },
+                decoder.BookFor(Instrument).ToList(Side.Bid).Select(level => level.Price));
+        }
+
+        [Fact]
         public void LossOnOneLineIsCoveredByTheOther()
         {
             var decoder = NewDecoder();
+            decoder.Consume(EmptySnapshot());
 
-            // A delivers 0, drops 1. B drops 0, delivers 1.
-            decoder.Consume(Packet(0, -1));
-            decoder.Consume(Packet(1, -2));
+            // A delivers 1, drops 2. B drops 1, delivers 2.
+            decoder.Consume(Packet(1, -1));
+            decoder.Consume(Packet(2, -2));
 
             Assert.Equal(0, decoder.Statistics.Gaps);
             Assert.False(decoder.IsStale);
@@ -75,10 +103,12 @@ namespace MarketData.Tests
                     var single = NewDecoder();
                     var redundant = NewDecoder();
                     var random = new Random(c.Seed);
+                    single.Consume(EmptySnapshot());
+                    redundant.Consume(EmptySnapshot());
 
                     for (var i = 0; i < packets; i++)
                     {
-                        var packet = Packet((ulong)i, -(i % 9) - 1);
+                        var packet = Packet((ulong)i + 1, -(i % 9) - 1);
 
                         var aDelivered = random.Next(100) >= c.LossPercent;
                         var bDelivered = random.Next(100) >= c.LossPercent;
@@ -120,6 +150,7 @@ namespace MarketData.Tests
                     var random = new Random(seed);
                     var decoder = NewDecoder();
                     var reference = BookFactory.Create("SortedArray", 10, 512);
+                    decoder.Consume(EmptySnapshot());
 
                     var pending = new System.Collections.Generic.List<byte[]>();
 
@@ -132,7 +163,7 @@ namespace MarketData.Tests
                     for (var i = 0; i < 500; i++)
                     {
                         var price = -(i % 7) - 1;
-                        var packet = Packet((ulong)i, price);
+                        var packet = Packet((ulong)i + 1, price);
                         reference.Upsert(Side.Bid, price, 100);
 
                         // Both copies enter a queue drained in random order, modelling the two
@@ -166,10 +197,11 @@ namespace MarketData.Tests
         public void ReorderingBeyondTheHoldBufferIsReportedAsLoss()
         {
             var decoder = NewDecoder();
-            decoder.Consume(Packet(0, -1));
+            decoder.Consume(EmptySnapshot());
+            decoder.Consume(Packet(1, -1));
 
-            // Everything from sequence 1 arrives except sequence 1 itself.
-            for (var sequence = 2UL; sequence <= FeedDecoder.MaxHeldPackets + 2; sequence++)
+            // Everything from sequence 2 arrives except sequence 2 itself.
+            for (var sequence = 3UL; sequence <= FeedDecoder.MaxHeldPackets + 3; sequence++)
                 decoder.Consume(Packet(sequence, -2));
 
             Assert.True(decoder.IsStale);

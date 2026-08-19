@@ -1,0 +1,85 @@
+{
+  "TimestampUtc": "2026-08-19T17:07:34.9160469+00:00",
+  "Runtime": ".NET 8.0.30",
+  "OperatingSystem": "Ubuntu 24.04.3 LTS",
+  "Architecture": "X64",
+  "LogicalProcessors": 8,
+  "ServerGc": true,
+  "CyclesPerTrial": 200000,
+  "Trials": 5,
+  "PriceBand": 2048,
+  "Results": [
+    {
+      "RestingOrders": 100,
+      "AddCancelCycleNs": {
+        "Median": 91.52,
+        "Min": 90.86,
+        "Max": 92.55
+      },
+      "CancelAddCycleNs": {
+        "Median": 102.43,
+        "Min": 100.83,
+        "Max": 110.21
+      },
+      "MatchReplenishCycleNs": {
+        "Median": 88.68,
+        "Min": 88.04,
+        "Max": 89.79
+      }
+    },
+    {
+      "RestingOrders": 1000,
+      "AddCancelCycleNs": {
+        "Median": 104.7,
+        "Min": 94.33,
+        "Max": 111.86
+      },
+      "CancelAddCycleNs": {
+        "Median": 75.7,
+        "Min": 73.68,
+        "Max": 79.87
+      },
+      "MatchReplenishCycleNs": {
+        "Median": 86,
+        "Min": 84.06,
+        "Max": 92.92
+      }
+    },
+    {
+      "RestingOrders": 10000,
+      "AddCancelCycleNs": {
+        "Median": 84.67,
+        "Min": 80.18,
+        "Max": 91.12
+      },
+      "CancelAddCycleNs": {
+        "Median": 81.78,
+        "Min": 76.51,
+        "Max": 82.46
+      },
+      "MatchReplenishCycleNs": {
+        "Median": 88.64,
+        "Min": 88.53,
+        "Max": 89.19
+      }
+    },
+    {
+      "RestingOrders": 100000,
+      "AddCancelCycleNs": {
+        "Median": 72.63,
+        "Min": 71.94,
+        "Max": 74.65
+      },
+      "CancelAddCycleNs": {
+        "Median": 117.06,
+        "Min": 106.49,
+        "Max": 133.4
+      },
+      "MatchReplenishCycleNs": {
+        "Median": 98.7,
+        "Min": 96.09,
+        "Max": 101.27
+      }
+    }
+  ]
+}

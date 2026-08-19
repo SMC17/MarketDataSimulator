@@ -66,11 +66,38 @@ namespace MarketData.Bench
             Interlocked.Increment(ref _counts[slot]);
             Interlocked.Add(ref _sums[slot], microseconds);
 
-            if (microseconds < Volatile.Read(ref _minimums[slot]))
-                Volatile.Write(ref _minimums[slot], microseconds);
+            UpdateMinimum(ref _minimums[slot], microseconds);
+            UpdateMaximum(ref _maximums[slot], microseconds);
+        }
 
-            if (microseconds > Volatile.Read(ref _maximums[slot]))
-                Volatile.Write(ref _maximums[slot], microseconds);
+        private static void UpdateMinimum(ref long target, long candidate)
+        {
+            var observed = Volatile.Read(ref target);
+
+            while (candidate < observed)
+            {
+                var prior = Interlocked.CompareExchange(ref target, candidate, observed);
+
+                if (prior == observed)
+                    return;
+
+                observed = prior;
+            }
+        }
+
+        private static void UpdateMaximum(ref long target, long candidate)
+        {
+            var observed = Volatile.Read(ref target);
+
+            while (candidate > observed)
+            {
+                var prior = Interlocked.CompareExchange(ref target, candidate, observed);
+
+                if (prior == observed)
+                    return;
+
+                observed = prior;
+            }
         }
 
         private static int BucketOf(long microseconds)

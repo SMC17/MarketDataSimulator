@@ -1,0 +1,312 @@
+{
+  "TimestampUtc": "2026-08-19T17:08:38.3470388+00:00",
+  "Runtime": ".NET 8.0.30",
+  "OperatingSystem": "Ubuntu 24.04.3 LTS",
+  "Architecture": "X64",
+  "LogicalProcessors": 8,
+  "ServerGc": true,
+  "Operations": 200000,
+  "Trials": 7,
+  "Results": [
+    {
+      "Depth": 10,
+      "Implementation": "SortedArrayBook",
+      "MixedNsPerOp": {
+        "Median": 33.06,
+        "Min": 32.6,
+        "Max": 49.11
+      },
+      "TouchNsPerOp": {
+        "Median": 2.59,
+        "Min": 2.48,
+        "Max": 3.09
+      },
+      "SnapshotNsPerOp": {
+        "Median": 8.22,
+        "Min": 8.22,
+        "Max": 13.1
+      },
+      "ClearNsPerOp": {
+        "Median": 29.89,
+        "Min": 29.83,
+        "Max": 30.01
+      },
+      "SnapshotBytesPerOp": 0
+    },
+    {
+      "Depth": 10,
+      "Implementation": "VectorizedBook",
+      "MixedNsPerOp": {
+        "Median": 25.25,
+        "Min": 23.97,
+        "Max": 27.27
+      },
+      "TouchNsPerOp": {
+        "Median": 6.11,
+        "Min": 5.91,
+        "Max": 6.45
+      },
+      "SnapshotNsPerOp": {
+        "Median": 19.26,
+        "Min": 19.25,
+        "Max": 20.29
+      },
+      "ClearNsPerOp": {
+        "Median": 39.19,
+        "Min": 38.83,
+        "Max": 76.62
+      },
+      "SnapshotBytesPerOp": 0
+    },
+    {
+      "Depth": 10,
+      "Implementation": "LadderBook",
+      "MixedNsPerOp": {
+        "Median": 25.57,
+        "Min": 24,
+        "Max": 54.45
+      },
+      "TouchNsPerOp": {
+        "Median": 7.19,
+        "Min": 7.14,
+        "Max": 9.19
+      },
+      "SnapshotNsPerOp": {
+        "Median": 52.72,
+        "Min": 52.47,
+        "Max": 54.79
+      },
+      "ClearNsPerOp": {
+        "Median": 134.46,
+        "Min": 133.4,
+        "Max": 147.54
+      },
+      "SnapshotBytesPerOp": 0
+    },
+    {
+      "Depth": 10,
+      "Implementation": "TreeBook",
+      "MixedNsPerOp": {
+        "Median": 54.57,
+        "Min": 51.72,
+        "Max": 59.91
+      },
+      "TouchNsPerOp": {
+        "Median": 12.78,
+        "Min": 12.73,
+        "Max": 13.23
+      },
+      "SnapshotNsPerOp": {
+        "Median": 353.25,
+        "Min": 262.38,
+        "Max": 413.75
+      },
+      "ClearNsPerOp": {
+        "Median": 63.3,
+        "Min": 58.27,
+        "Max": 63.4
+      },
+      "SnapshotBytesPerOp": 104
+    },
+    {
+      "Depth": 100,
+      "Implementation": "SortedArrayBook",
+      "MixedNsPerOp": {
+        "Median": 47.78,
+        "Min": 46.19,
+        "Max": 55.85
+      },
+      "TouchNsPerOp": {
+        "Median": 2.71,
+        "Min": 2.56,
+        "Max": 3.2
+      },
+      "SnapshotNsPerOp": {
+        "Median": 10.16,
+        "Min": 7.95,
+        "Max": 12.07
+      },
+      "ClearNsPerOp": {
+        "Median": 30.16,
+        "Min": 29.96,
+        "Max": 30.36
+      },
+      "SnapshotBytesPerOp": 0
+    },
+    {
+      "Depth": 100,
+      "Implementation": "VectorizedBook",
+      "MixedNsPerOp": {
+        "Median": 37.21,
+        "Min": 36.67,
+        "Max": 39.07
+      },
+      "TouchNsPerOp": {
+        "Median": 6.07,
+        "Min": 6.02,
+        "Max": 7.18
+      },
+      "SnapshotNsPerOp": {
+        "Median": 20.29,
+        "Min": 19.26,
+        "Max": 22.66
+      },
+      "ClearNsPerOp": {
+        "Median": 50.22,
+        "Min": 49.43,
+        "Max": 128.89
+      },
+      "SnapshotBytesPerOp": 0
+    },
+    {
+      "Depth": 100,
+      "Implementation": "LadderBook",
+      "MixedNsPerOp": {
+        "Median": 27.65,
+        "Min": 27.42,
+        "Max": 28.09
+      },
+      "TouchNsPerOp": {
+        "Median": 7.26,
+        "Min": 7.2,
+        "Max": 7.44
+      },
+      "SnapshotNsPerOp": {
+        "Median": 52.8,
+        "Min": 52.27,
+        "Max": 54.09
+      },
+      "ClearNsPerOp": {
+        "Median": 1149.53,
+        "Min": 1132.31,
+        "Max": 1378.78
+      },
+      "SnapshotBytesPerOp": 0
+    },
+    {
+      "Depth": 100,
+      "Implementation": "TreeBook",
+      "MixedNsPerOp": {
+        "Median": 89.5,
+        "Min": 87.91,
+        "Max": 96.85
+      },
+      "TouchNsPerOp": {
+        "Median": 15.07,
+        "Min": 14.79,
+        "Max": 16.72
+      },
+      "SnapshotNsPerOp": {
+        "Median": 224.34,
+        "Min": 190.41,
+        "Max": 728
+      },
+      "ClearNsPerOp": {
+        "Median": 157.76,
+        "Min": 156.42,
+        "Max": 191.12
+      },
+      "SnapshotBytesPerOp": 152
+    },
+    {
+      "Depth": 1000,
+      "Implementation": "SortedArrayBook",
+      "MixedNsPerOp": {
+        "Median": 64.48,
+        "Min": 63.4,
+        "Max": 65.61
+      },
+      "TouchNsPerOp": {
+        "Median": 2.48,
+        "Min": 2.48,
+        "Max": 2.56
+      },
+      "SnapshotNsPerOp": {
+        "Median": 7.42,
+        "Min": 7.42,
+        "Max": 8.03
+      },
+      "ClearNsPerOp": {
+        "Median": 32.56,
+        "Min": 31.39,
+        "Max": 36.43
+      },
+      "SnapshotBytesPerOp": 0
+    },
+    {
+      "Depth": 1000,
+      "Implementation": "VectorizedBook",
+      "MixedNsPerOp": {
+        "Median": 53.84,
+        "Min": 51.75,
+        "Max": 56.57
+      },
+      "TouchNsPerOp": {
+        "Median": 6.01,
+        "Min": 5.89,
+        "Max": 6.12
+      },
+      "SnapshotNsPerOp": {
+        "Median": 19.65,
+        "Min": 19.25,
+        "Max": 23.46
+      },
+      "ClearNsPerOp": {
+        "Median": 227.59,
+        "Min": 199.42,
+        "Max": 236.63
+      },
+      "SnapshotBytesPerOp": 0
+    },
+    {
+      "Depth": 1000,
+      "Implementation": "LadderBook",
+      "MixedNsPerOp": {
+        "Median": 35.9,
+        "Min": 35.34,
+        "Max": 42.98
+      },
+      "TouchNsPerOp": {
+        "Median": 7.5,
+        "Min": 7.18,
+        "Max": 8.24
+      },
+      "SnapshotNsPerOp": {
+        "Median": 52.98,
+        "Min": 52.64,
+        "Max": 53.69
+      },
+      "ClearNsPerOp": {
+        "Median": 12052.37,
+        "Min": 11873.82,
+        "Max": 12997.6
+      },
+      "SnapshotBytesPerOp": 0
+    },
+    {
+      "Depth": 1000,
+      "Implementation": "TreeBook",
+      "MixedNsPerOp": {
+        "Median": 123.86,
+        "Min": 123.18,
+        "Max": 125.21
+      },
+      "TouchNsPerOp": {
+        "Median": 18.42,
+        "Min": 17.76,
+        "Max": 35.18
+      },
+      "SnapshotNsPerOp": {
+        "Median": 304.93,
+        "Min": 180,
+        "Max": 1091.72
+      },
+      "ClearNsPerOp": {
+        "Median": 983.4,
+        "Min": 923.55,
+        "Max": 1072.02
+      },
+      "SnapshotBytesPerOp": 200
+    }
+  ]
+}

@@ -17,6 +17,19 @@ namespace MarketData.Tests
             Assert.Equal(8, new RingBuffer<int>(5).Capacity);
             Assert.Equal(1024, new RingBuffer<int>(1000).Capacity);
             Assert.Throws<ArgumentOutOfRangeException>(() => new RingBuffer<int>(0));
+            Assert.Throws<ArgumentOutOfRangeException>(
+                () => new RingBuffer<int>(RingBuffer<int>.MaxCapacity + 1));
+        }
+
+        [Fact]
+        public void ReleaseCannotAdvancePastPublishedItems()
+        {
+            var ring = new RingBuffer<int>(8);
+            Assert.True(ring.TryWrite(1));
+
+            Assert.Throws<ArgumentOutOfRangeException>(() => ring.Release(-1));
+            Assert.Throws<ArgumentOutOfRangeException>(() => ring.Release(2));
+            Assert.Equal(1, ring.Count);
         }
 
         [Fact]
@@ -171,12 +184,16 @@ namespace MarketData.Tests
         /// producer and consumer genuinely race for the same cache lines.
         /// </remarks>
         [Fact]
-        public void SurvivesAConcurrentProducerAndConsumer()
+        public async Task SurvivesAConcurrentProducerAndConsumer()
         {
             const int items = 1_000_000;
             var ring = new RingBuffer<long>(1024);
             long consumed = 0;
             long outOfOrder = 0;
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(60));
+            var cancellationToken = timeout.Token;
 
             var consumer = Task.Run(() =>
             {
@@ -184,6 +201,8 @@ namespace MarketData.Tests
 
                 while (expected < items)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     if (!ring.TryRead(out var value))
                     {
                         Thread.SpinWait(1);
@@ -196,19 +215,23 @@ namespace MarketData.Tests
                     expected++;
                     Interlocked.Increment(ref consumed);
                 }
-            });
+            }, cancellationToken);
 
             var producer = Task.Run(() =>
             {
                 for (long i = 0; i < items; i++)
                 {
-                    while (!ring.TryWrite(i))
-                        Thread.SpinWait(1);
-                }
-            });
+                    cancellationToken.ThrowIfCancellationRequested();
 
-            Assert.True(Task.WaitAll(new[] { producer, consumer }, TimeSpan.FromSeconds(60)),
-                "producer and consumer did not finish; the ring may have deadlocked");
+                    while (!ring.TryWrite(i))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        Thread.SpinWait(1);
+                    }
+                }
+            }, cancellationToken);
+
+            await Task.WhenAll(producer, consumer);
 
             Assert.Equal(0, Interlocked.Read(ref outOfOrder));
             Assert.Equal(items, Interlocked.Read(ref consumed));
@@ -217,11 +240,15 @@ namespace MarketData.Tests
         }
 
         [Fact]
-        public void BatchDrainSurvivesAConcurrentProducer()
+        public async Task BatchDrainSurvivesAConcurrentProducer()
         {
             const int items = 500_000;
             var ring = new RingBuffer<long>(512);
             long outOfOrder = 0;
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(60));
+            var cancellationToken = timeout.Token;
 
             var consumer = Task.Run(() =>
             {
@@ -229,6 +256,8 @@ namespace MarketData.Tests
 
                 while (expected < items)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     var batch = ring.PeekBatch();
                     var count = batch.Length;
 
@@ -248,19 +277,23 @@ namespace MarketData.Tests
 
                     ring.Release(count);
                 }
-            });
+            }, cancellationToken);
 
             var producer = Task.Run(() =>
             {
                 for (long i = 0; i < items; i++)
                 {
-                    while (!ring.TryWrite(i))
-                        Thread.SpinWait(1);
-                }
-            });
+                    cancellationToken.ThrowIfCancellationRequested();
 
-            Assert.True(Task.WaitAll(new[] { producer, consumer }, TimeSpan.FromSeconds(60)),
-                "batch drain did not finish");
+                    while (!ring.TryWrite(i))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        Thread.SpinWait(1);
+                    }
+                }
+            }, cancellationToken);
+
+            await Task.WhenAll(producer, consumer);
 
             Assert.Equal(0, Interlocked.Read(ref outOfOrder));
             Assert.Equal(items, ring.Consumed);

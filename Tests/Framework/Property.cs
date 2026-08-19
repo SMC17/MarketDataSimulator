@@ -85,7 +85,7 @@ namespace MarketData.Tests.Framework
             return current;
         }
 
-        private static bool Try<T>(Action<T> property, T candidate, out Exception failure)
+        private static bool Try<T>(Action<T> property, T candidate, out Exception? failure)
         {
             try
             {
@@ -101,7 +101,7 @@ namespace MarketData.Tests.Framework
         }
 
         private static string BuildMessage<T>(int rootSeed, int caseSeed, int index, T minimal,
-            Func<T, string> describe, Exception failure)
+            Func<T, string> describe, Exception? failure)
         {
             var message = new StringBuilder();
             message.AppendLine($"Property failed on case {index} (root seed {rootSeed}, case seed {caseSeed}).");
