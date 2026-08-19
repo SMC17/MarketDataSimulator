@@ -104,6 +104,29 @@ dotnet run --project Bench -c Release -- replay --data data/lobster
 
 A 20,000-message slice is committed, so CI validates against real market data offline.
 
+### What the book is for
+
+Reconstructing a book only matters if something can be computed from it. **Order flow
+imbalance** — net pressure at the touch — over the real AMZN session, in non-overlapping
+buckets:
+
+| Bucket | Contemporaneous R² | t | Predictive R² | t |
+|---|---|---|---|---|
+| 10 events | 6.15% | 42.0 | 0.06% | 4.0 |
+| 50 events | 10.79% | 25.5 | **0.87%** | **6.9** |
+| 500 events | **30.66%** | 15.4 | 0.00% | 0.1 |
+
+Contemporaneously the relationship is strong, reproducing Cont–Kukanov–Stoikov (2014) on this
+session. **Predictively it is weak** — under 1% of variance everywhere, statistically real at
+short horizons and gone by 500 events.
+
+That gap is the point. A signal that explains what just happened is not one that predicts what
+happens next, and conflating them is the usual way this analysis gets oversold. Buckets are
+non-overlapping because overlapping windows share observations and inflate significance for free.
+
+Both the monitor and the regression are O(1) per update and allocate nothing — a signal computed
+off the feed path arrives too late to act on.
+
 ### Matching engine
 
 The feed is the output of a real matching engine, not a random walk over price levels. Orders
@@ -197,7 +220,7 @@ which turns silent loss into detectable loss, and the consumer:
 
 ### Testing
 
-103 tests, all deterministic and seeded. The interesting ones are not unit tests:
+117 tests, all deterministic and seeded. The interesting ones are not unit tests:
 
 - **Differential testing** — random operation streams are applied to all three
   book implementations and their state compared after *every* operation, so a
@@ -236,7 +259,7 @@ place and cannot be got wrong independently twice.
 
 ```bash
 dotnet build MarketDataSimulator.sln -c Release
-dotnet test Tests/Tests.csproj -c Release       # 103 tests
+dotnet test Tests/Tests.csproj -c Release       # 117 tests
 ./scripts/smoke.sh                              # end-to-end, both transports
 ```
 
@@ -263,6 +286,10 @@ python3 bench/run.py --subscribers 100 200 400 600 --rates 50 --tag unicast
 python3 bench/run_multicast.py --subscribers 100 1000 4000 --rates 50 --tag mcast
 
 python3 bench/report.py unicast
+
+# Real-data replay and the microstructure study (needs ./scripts/fetch-lobster.sh first)
+dotnet run --project Bench -c Release -- replay --data data/lobster
+dotnet run --project Bench -c Release -- study  --data data/lobster
 ```
 
 Every run starts a fresh server process, so no run can contaminate the next, and

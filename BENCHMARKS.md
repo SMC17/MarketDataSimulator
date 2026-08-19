@@ -385,6 +385,58 @@ nanoseconds are exact, and exactness is what lets two events be ordered confiden
 
 ---
 
+## Does the book predict anything? Order flow imbalance on real data
+
+Reconstructing a book is only worth doing if something can be computed from it. The canonical
+something is **order flow imbalance** — net pressure at the touch, attributing every change in
+the best quotes to buying or selling interest. Size added at the bid and size removed from the
+ask both count as buying pressure; it is deliberately blind to whether a departure was a
+cancellation or a trade, because the book cannot tell and the distinction does not matter to
+the signal.
+
+Run over the AMZN session, bucketed into non-overlapping blocks of events:
+
+| Bucket (events) | Samples | Contemporaneous R² | slope | t | Predictive R² | slope | t |
+|---|---|---|---|---|---|---|---|
+| 10 | 26,974 | 6.15% | 0.192 | 42.0 | 0.06% | 0.019 | 4.0 |
+| 25 | 10,789 | 8.44% | 0.216 | 31.5 | 0.38% | 0.045 | 6.4 |
+| 50 | 5,394 | 10.79% | 0.248 | 25.5 | **0.87%** | 0.070 | **6.9** |
+| 100 | 2,697 | 14.69% | 0.295 | 21.5 | 0.71% | 0.064 | 4.4 |
+| 250 | 1,078 | 25.56% | 0.438 | 19.2 | 0.44% | 0.057 | 2.2 |
+| 500 | 539 | **30.66%** | 0.458 | 15.4 | 0.00% | 0.004 | 0.1 |
+
+Slope is half-ticks of mid change per unit of imbalance. Every contemporaneous slope is
+positive: buying pressure raises the price, as it must.
+
+**Contemporaneously the relationship is strong** — 6% of variance explained at ten events,
+rising to 31% at five hundred, with t-statistics from 15 to 42. That reproduces the
+Cont–Kukanov–Stoikov (2014) result on this session. R² rising with bucket size is expected:
+aggregation averages out the noise in individual updates while the signal accumulates.
+
+**Predictively it is much weaker, and that is the honest headline.** Using the *previous*
+bucket's imbalance to predict the *next* bucket's move — strictly out of sample in time, which
+is the only version that could be traded — explains under 1% of variance everywhere. It is
+statistically real at short horizons (t ≈ 6.9 at 50 events, on 5,394 non-overlapping samples)
+and gone entirely by 500 events (t = 0.1).
+
+That gap between 31% and 0.87% is the whole point. A signal that explains what just happened is
+not a signal that predicts what happens next, and reporting the contemporaneous number as though
+it were predictive is the most common way this analysis is oversold. The buckets here are
+non-overlapping precisely because overlapping windows share observations, and the resulting
+autocorrelation inflates significance for free.
+
+Both the monitor and the regression are incremental, O(1) per update, and allocate nothing —
+asserted by test. A signal computed off the feed path is a signal that arrives too late to act
+on. The regression uses Welford-style updating rather than raw sums of squares, because a
+session-long flow accumulator sits far from zero and the textbook formula would lose most of its
+significant digits differencing two large near-equal numbers.
+
+```bash
+dotnet run --project Bench -c Release -- study --data data/lobster
+```
+
+---
+
 ## Order book micro-benchmark
 
 Three implementations of the same depth-limited book, each running the identical
