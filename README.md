@@ -46,7 +46,7 @@ listeners as for 6,000:
 | 100 | 1.61 ms | **0.31 ms** | **5.3×** |
 | 500 | 8.54 ms | **0.85 ms** | **10.1×** |
 
-Multicast was also measured at 250, 1,000, 2,000, 4,000, 6,000, 8,000 subscribers, where unicast was not run — see the multicast sweep above.
+Multicast was also measured at 250, 1,000, 2,000, 4,000, 6,000, 8,000 subscribers, where unicast was not run; those points are in the multicast sweep in BENCHMARKS.md.
 <!-- /generated -->
 
 Zero gaps, zero missed messages and zero stale subscribers at every sustained

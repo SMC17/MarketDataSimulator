@@ -415,7 +415,8 @@ def head_to_head():
     if only_multicast:
         rendered += ("\n\nMulticast was also measured at "
                      + ", ".join(only_multicast)
-                     + " subscribers, where unicast was not run — see the multicast sweep above.")
+                     + " subscribers, where unicast was not run; those points are in the "
+                       "multicast sweep in BENCHMARKS.md.")
     return rendered
 
 
