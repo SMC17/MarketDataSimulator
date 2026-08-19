@@ -1,0 +1,38 @@
+[
+  {
+    "Label": "batch64_s1000_r500",
+    "TimestampUtc": "2026-08-19T00:21:09.5049153+00:00",
+    "Subscribers": 1000,
+    "MeasuredSeconds": 20,
+    "MessagesReceived": 20035000,
+    "MessagesPerSecond": 1001733.8,
+    "MessagesPerSecondPerSubscriber": 1001.7,
+    "Packets": 3753000,
+    "Gaps": 0,
+    "MissedMessages": 0,
+    "Duplicates": 0,
+    "Malformed": 0,
+    "Recoveries": 0,
+    "StaleSubscribers": 0,
+    "MeanMs": 1.5384,
+    "MinMs": 0.026,
+    "P50Ms": 1.512,
+    "P90Ms": 2.425,
+    "P99Ms": 3.397,
+    "P999Ms": 5.556,
+    "MaxMs": 25.433,
+    "ServerCpuPercent": 32.4,
+    "HostCpuPercent": 51.8,
+    "HostCores": 4,
+    "UpdateRatePerInstrument": 500.0,
+    "AggregateUpdateRate": 1000.0,
+    "MaxBatch": 64,
+    "BenchOutput": [
+      "RESULT subscribers=1000 msgs=20035000 throughput=1,001,734/s perSubscriber=1,002/s",
+      "RESULT latency ms: mean=1.5384 min=0.026 p50=1.512 p99=3.397 max=25.433",
+      "RESULT feed: packets=3753000 gaps=0 missed=0 dupes=0 malformed=0 recoveries=0 stale=0",
+      "Wrote /home/user/MarketDataSimulator/bench/results/batch64_s1000_r500.json"
+    ],
+    "ServerPacketsPerSecond": 186.7
+  }
+]

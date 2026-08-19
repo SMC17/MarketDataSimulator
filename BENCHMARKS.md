@@ -1,63 +1,101 @@
-# Market data dissemination benchmark
+# Dissemination benchmark
 
-Measured capacity of the exchange-to-client broadcast path in this repository:
-one simulated matching engine producing order book updates, fanned out over gRPC
-duplex streams to many concurrent subscribers.
+Measured capacity of the exchange-to-client broadcast path in this repository,
+over two transports: per-subscriber gRPC streams, and sequenced UDP multicast.
+
+Every number below was produced by the harness in this repo, on the machine
+described under [Environment](#environment), and the raw per-run JSON is in
+`bench/results/`.
+
+## Contents
+
+- [Headline](#headline)
+- [What is being measured](#what-is-being-measured)
+- [Environment](#environment)
+- [Unicast: the O(N) wall](#unicast-the-on-wall)
+- [Multicast: removing the term](#multicast-removing-the-term)
+- [Head to head](#head-to-head)
+- [Order book micro-benchmark](#order-book-micro-benchmark)
+- [Repeatability](#repeatability)
+- [Threats to validity](#threats-to-validity)
+- [Reproducing](#reproducing)
+
+---
 
 ## Headline
 
-On a 4 vCPU host with the load generator running **on the same box**, the server
-sustains the following, with zero dropped updates and every subscriber receiving
-the complete feed:
+On a 4 vCPU host with the load generator running **on the same box**, with zero
+dropped updates, zero detected gaps, and every subscriber receiving the complete
+feed:
 
-| Operating point | Subscribers | Feed rate | Fan-out | Mean latency | p99 | Runs |
-|---|---|---|---|---|---|---|
-| **Recommended** - repeatable, comfortable margin | **500** | 100 upd/s | 50,000 msg/s | **11.5 ms** (10.5-12.4) | 43 ms | 4 |
-| Most subscribers | **4,000** | 10 upd/s | 40,000 msg/s | **~55 ms** (47-96) | 145 ms | 4 |
-| Most throughput | **700** | 100 upd/s | 70,000 msg/s | **31.4 ms** | 138 ms | 1 |
-| Round number, large headroom | **1,000** | 10 upd/s | 10,000 msg/s | **23.9 ms** | 47 ms | 1 |
+| Transport | Max sustained subscribers | Fan-out at that point | Mean latency | Server CPU |
+|---|---|---|---|---|
+| Unicast gRPC | 700 | 69,864 msg/s | 31.4 ms | 232% |
+| **Multicast** | **8,000** | **814,645 msg/s** | **11.1 ms** | **44%** |
 
-There is no single "how many subscribers" number, because subscriber count and
-latency trade off against each other continuously - the full frontier is below.
-The 500-subscriber point is the one to quote: it repeats within +/-8% across
-runs, whereas the 4,000-subscriber point varies by 2x run to run and the
-700-subscriber point sits at 380% of the host's 400% CPU with no margin.
+At matched subscriber counts the difference is starker still:
+
+| Subscribers | Unicast mean | Multicast mean | Improvement |
+|---|---|---|---|
+| 100 | 2.79 ms | 0.34 ms | **8.2×** |
+| 500 | 11.37 ms | 0.69 ms | **16.5×** |
+
+Peak measured throughput was **1,001,892 messages/second** delivered to 1,000
+subscribers at 1.61 ms mean latency, with the server at 40% of one core.
+
+The single most important measurement in this document is not a latency figure.
+It is that the server transmitted **101.9 packets per second in every multicast
+run**, from 100 subscribers to 8,000 — the update rate, entirely independent of
+the audience.
+
+---
 
 ## What is being measured
 
-**Subscriber** - one `StreamOrderbookUpdates` duplex gRPC stream, on its own TCP
-connection, subscribed to every instrument on the feed. This is the same call the
-`Client` project makes; the harness differs only in that it does not print.
+**Subscriber** — one independent consumer of the feed. Under unicast, a
+`StreamOrderbookUpdates` duplex gRPC stream on its own TCP connection. Under
+multicast, a socket joined to the group with its own decoder and its own book.
 
-**Update latency** - the interval between the matching engine producing an update
-and a subscriber's process receiving it. The server stamps
-`Stopwatch.GetTimestamp()` onto the update at the moment of generation, just
-before it enters the dissemination path (`Orderbook.PublishUpdateAsync`); the
-subscriber subtracts that from its own `Stopwatch.GetTimestamp()` on arrival.
+**Update latency** — the interval between the server transmitting an update and
+a subscriber's process receiving it. The publisher stamps
+`Stopwatch.GetTimestamp()` onto the update as it enters the dissemination path;
+the subscriber subtracts that from its own `Stopwatch.GetTimestamp()` on arrival.
 
 Both processes run on the same host, and on Linux .NET's `Stopwatch` reads
 `CLOCK_MONOTONIC`, which is machine-wide. The two readings are therefore directly
-comparable with no clock synchronisation and no halving of a round trip. This is
-a genuine one-way, end-to-end measurement covering queueing, fan-out,
-serialisation, the kernel loopback path and the subscriber's receive path.
+comparable — no clock synchronisation, and no halving of a round trip. This is a
+genuine one-way, end-to-end measurement covering queueing, fan-out,
+serialisation, the kernel path and the subscriber's receive path.
 
-Reported latency is the mean over every update delivered to every subscriber
-during the measurement window - not per update, and not per subscriber. An update
+Reported latency is the mean over **every update delivered to every subscriber**
+in the measurement window — not per update, and not per subscriber. An update
 fanned out to 700 subscribers contributes 700 samples, so subscribers served late
-in a fan-out are fully represented.
+in a fan-out are fully represented. This is deliberate: a per-update mean would
+hide exactly the effect the unicast section is about.
 
-**Sustained** - a run only counts if all of the following hold:
+**No coordinated omission.** The timestamp is applied when the update is
+*produced*, not when a send is attempted, so a stalled dissemination path
+inflates the latency of every update queued behind it rather than quietly
+excluding them. Load is generated open-loop at a fixed rate: the generator does
+not wait for subscribers, so a slow system produces a backlog rather than a
+reduced offered rate.
+
+**Sustained** — a run only counts if all of the following hold:
 
 | Criterion | Why it matters |
 |---|---|
 | every subscriber stayed connected for the whole run | a run that sheds subscribers is not serving them |
-| delivered >= 99% of `subscribers x feed rate` | every subscriber saw the whole feed |
+| delivered ≥ 99% of `subscribers × feed rate` | every subscriber saw the whole feed |
 | zero dropped updates | no subscriber overflowed its outbound queue |
-| shared update queue stayed bounded | the fan-out kept pace with the matching engine |
-| per-subscriber outbound queues stayed bounded | no subscriber accumulated a backlog |
+| zero sequence gaps (multicast) | no subscriber silently lost data |
+| zero stale subscribers (multicast) | no subscriber gave up on its book |
+| shared update queue bounded | the fan-out kept pace with the matching engine |
+| per-subscriber queues bounded (unicast) | no subscriber accumulated a backlog |
 
-Runs failing these checks are still reported, but marked. A saturated system's
-mean latency is a function of how long the run lasted, not of how fast it is.
+Runs failing these are still reported, but marked. A saturated system's mean
+latency is a function of how long the run lasted, not of how fast it is.
+
+---
 
 ## Environment
 
@@ -67,17 +105,17 @@ mean latency is a function of how long the run lasted, not of how fast it is.
 | Memory | 15 GB |
 | OS | Ubuntu 24.04.4 LTS, kernel 6.18.5 |
 | Runtime | .NET 8.0.30 (projects target `net6.0`, run with roll-forward) |
-| Build | Release |
-| Transport | gRPC over HTTP/2, cleartext, loopback |
+| Build | Release, Server GC |
+| Transports | gRPC over HTTP/2 cleartext; UDP multicast on 239.7.7.7 — both over loopback |
 | Topology | server and load generator as separate processes on the same host |
 | Instruments | 2, depth 10, 5% of updates are full snapshots |
-| Per run | 8 s warm-up discarded, 25 s measured |
+| Per run | 8 s warm-up discarded, 20–25 s measured, fresh server process per case |
 
-## Results
+---
 
-### Fan-out throughput axis - 100 updates/s feed
+## Unicast: the O(N) wall
 
-Feed rate held constant, subscriber population increased.
+Feed rate held constant at 100 updates/s aggregate; subscriber population varied.
 
 | Subscribers | Fan-out (msg/s) | Mean (ms) | p50 | p99 | p99.9 | Max | Delivered | Server CPU | Host CPU | Sustained |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -90,29 +128,48 @@ Feed rate held constant, subscriber population increased.
 | 700 | 69,864 | **31.42** | 21.75 | 138.2 | 169.2 | 215.5 | 99.8% | 232% | 380% | yes |
 | 800 | 82,172 | 197.32 | 88.45 | 899.0 | 949.0 | 1009.3 | 102.7% | 229% | 390% | **NO** |
 
-At 800 the host is at 390% of 400% and per-subscriber queues pass 100 messages;
-delivery above 100% is a backlog draining, not extra data.
+At 800 the host is at 390% of 400%, per-subscriber queues pass 100 messages, and
+delivery above 100% is a backlog draining rather than extra data.
 
-### Subscriber count axis - 10 updates/s feed
+A second sweep holds the *message rate* constant instead, on a lighter feed:
 
-Population increased on a light feed, so CPU is not the binding constraint until
-the very end.
+| Subscribers | Feed | Fan-out (msg/s) | Mean (ms) | p99 | Server CPU | Host CPU | Sustained |
+|---|---|---|---|---|---|---|---|
+| 1,000 | 10 upd/s | 10,000 | **23.92** | 47.4 | 53% | 94% | yes |
+| 2,000 | 10 upd/s | 19,995 | **42.42** | 90.0 | 96% | 176% | yes |
+| 3,000 | 10 upd/s | 29,989 | **57.88** | 136.4 | 123% | 235% | yes |
+| 4,000 | 10 upd/s | 39,998 | **95.64** | 278.6 | 162% | 331% | yes |
+| 5,000 | 10 upd/s | 52,445 | 469.15 | 1695.0 | 191% | 376% | **NO** |
 
-| Subscribers | Fan-out (msg/s) | Mean (ms) | p50 | p99 | p99.9 | Max | Delivered | Server CPU | Host CPU | Sustained |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 1,000 | 10,000 | **23.92** | 24.25 | 47.4 | 58.5 | 61.4 | 100.0% | 53% | 94% | yes |
-| 2,000 | 19,995 | **42.42** | 42.25 | 90.0 | 115.5 | 119.0 | 100.0% | 96% | 176% | yes |
-| 3,000 | 29,989 | **57.88** | 55.85 | 136.4 | 169.9 | 174.9 | 100.0% | 123% | 235% | yes |
-| 4,000 | 39,998 | **95.64** | 93.75 | 278.6 | 339.9 | 417.9 | 100.0% | 162% | 331% | yes |
-| 5,000 | 52,445 | 469.15 | 155.45 | 1695.0 | 1855.0 | 1958.0 | 104.9% | 191% | 376% | **NO** |
+### What the two sweeps say together
 
-Beyond this, at 6,000 subscribers the run loses streams outright: 1,523 of 6,000
-subscribers were disconnected mid-run and delivery fell to 83%.
+Put one row from each beside the other:
 
-### Before and after the fan-out rework
+| Run | Subscribers | Feed | Fan-out | Mean latency | Host CPU |
+|---|---|---|---|---|---|
+| A | 100 | 100 upd/s | 10,000 msg/s | 2.79 ms | 66% of 400% |
+| B | 1,000 | 10 upd/s | 10,000 msg/s | 23.92 ms | 94% of 400% |
 
-The same harness against the original dissemination path, which awaited every
-subscriber's network write inside the broadcast loop:
+Identical work per second. Ten times the audience costs 8.6× the latency, on a
+box that was three-quarters idle — so this is not CPU starvation. It is the
+fan-out span: every update is written once per subscriber, and a subscriber's
+latency is essentially its position in that sequence of writes.
+
+**Throughput** is bounded separately, by CPU cost per message. At the top of the
+sustained range (700 subscribers, 69,864 msg/s, 232% CPU) the server spends
+about **33 µs of CPU per delivered message**, which is what puts the ceiling near
+70–80k msg/s once the co-resident harness takes its share. The dominant term is
+the per-write trip through the `Grpc.Core` C-core interop layer.
+
+Notice also that the server never exceeds ~232% of 400%. It cannot use the whole
+machine, because dissemination is serialised behind a fan-out that must visit
+every subscriber in turn.
+
+### Before the fan-out rework
+
+The original implementation awaited each subscriber's network write *inside* the
+broadcast loop, rebuilt the wire message once per subscriber, and allocated a
+`HashSet` per subscriber per update merely to test subscription:
 
 | Subscribers | Original mean | Original fan-out | Reworked mean | Reworked fan-out |
 |---|---|---|---|---|
@@ -120,115 +177,281 @@ subscriber's network write inside the broadcast loop:
 | 300 | 5,240 ms | 21,072 msg/s | **6.71 ms** | 30,002 msg/s |
 | 400 | 7,953 ms | 20,520 msg/s | **9.74 ms** | 39,904 msg/s |
 
-The original implementation ceilinged at roughly 20,000 msg/s and collapsed past
-~200 subscribers - at 300 and 400 subscribers its fan-out rate is flat at the
-ceiling while latency grows without bound, which is the signature of a queue
-that never drains. It never exceeded 2 of 4 cores, because the broadcast loop
-awaited each subscriber's network write in turn and was itself the serialisation
-point. Its best sustained result was 150 subscribers at 8.0 ms.
+It ceilinged at roughly 20,000 msg/s and collapsed past ~200 subscribers — at 300
+and 400 its fan-out rate is flat at the ceiling while latency grows without
+bound, the signature of a queue that never drains. Its best sustained result was
+150 subscribers at 8.0 ms.
 
-Raw results for both are in `bench/results/` (`baseline_*` and `feed100_*`).
+The rework (encode once per update; lock-free subscription test against a
+copy-on-write snapshot; a bounded queue per subscriber drained by its own pump,
+so the broadcast thread never touches the network) bought roughly 3.5× the
+throughput and 4× the subscribers. It did **not** remove the O(N) term, because
+nothing at this layer can.
+
+---
+
+## Multicast: removing the term
+
+Same matching engine, same feed rate, same measurement. The publisher encodes
+each update once and sends a single datagram; the network performs the
+replication.
+
+| Subscribers | Fan-out (msg/s) | Mean (ms) | p50 | p99 | Max | Gaps | Stale | Server pkts/s | Server CPU | Host CPU |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 100 | 10,195 | **0.34** | 0.29 | 0.71 | 16.4 | 0 | 0 | 101.9 | 12% | 8% |
+| 250 | 25,487 | **0.46** | 0.44 | 1.15 | 4.7 | 0 | 0 | 101.9 | 13% | 12% |
+| 500 | 50,999 | **0.69** | 0.68 | 1.54 | 7.1 | 0 | 0 | 101.9 | 15% | 9% |
+| 1,000 | 101,997 | **1.29** | 1.24 | 3.38 | 10.0 | 0 | 0 | 101.9 | 18% | 41% |
+| 2,000 | 203,998 | **3.25** | 2.89 | 9.88 | 29.3 | 0 | 0 | 101.9 | 22% | 166% |
+| 4,000 | 408,084 | **4.35** | 4.31 | 9.66 | 50.4 | 0 | 0 | 101.9 | 31% | 216% |
+| 6,000 | 611,976 | **7.27** | 7.15 | 16.8 | 47.3 | 0 | 0 | 102.0 | 39% | 300% |
+| 8,000 | 814,645 | **11.14** | 9.96 | 35.1 | 93.5 | 0 | 0 | 101.8 | 44% | 377% |
+
+Every run: zero gaps, zero missed messages, zero stale subscribers, zero
+malformed packets.
+
+**The `Server pkts/s` column is the result.** It does not move. The publisher
+transmits at the update rate and has no idea how many subscribers exist —
+`MulticastOrderbookService` contains no subscriber table at all.
+
+Server CPU rises from 12% to 44% across an 80× increase in audience, and that
+residual is not fan-out work: on a single host the kernel replicates each
+datagram into every subscriber's socket buffer, and some of that cost is charged
+to the sender's softirq context. On a real network that replication is done by
+switches. Host CPU — which includes all 8,000 receivers — is what reaches 377%,
+and that is what bounds this measurement at 8,000, not the server.
+
+---
+
+## Batching: why fan-out inverts the usual trade
+
+Batching normally trades latency for throughput — you wait to accumulate work,
+so each item leaves later. Measured on a fan-out feed, it does the opposite.
+
+1,000 subscribers, 1,000 updates/s aggregate (≈1M messages/s delivered), varying
+only how many messages the publisher packs into a datagram:
+
+| Max batch | Messages/s | Server pkts/s | Mean (ms) | p99 (ms) | Server CPU | Host CPU |
+|---|---|---|---|---|---|---|
+| 1 | 973,783 | 933.8 | 3.63 | 24.35 | 56% | **383%** |
+| 4 | 1,001,892 | 307.8 | 1.61 | 3.85 | 40% | 168% |
+| 16 | 1,001,636 | 187.9 | **1.56** | 3.41 | 32% | 56% |
+| 64 | 1,001,734 | 186.7 | **1.54** | **3.40** | **32%** | **52%** |
+
+Batching cut mean latency by 2.4×, p99 by 7×, and host CPU by 7.4×.
+
+The reason is that per-packet cost in a broadcast system is not paid once — it is
+paid once per subscriber. Every datagram costs the sender a syscall and costs
+each of 1,000 receivers a wakeup, a copy and a trip through the socket layer.
+Halving the packet count removes that work 1,000 times over. At `MaxBatch = 1`
+the host is at 383% of 400% and messages queue behind saturated receivers, which
+is where the extra 2 ms of latency comes from; batching removes the saturation,
+and the latency goes with it.
+
+Batching is not free of the usual trade — it is still bounded by the flush
+deadline, and a genuinely idle feed would see a message wait for it. But when the
+audience is large, the amortisation is multiplied by the audience and dominates.
+
+Note the packet rates at `MaxBatch` 16 and 64 are identical (≈187/s, about 5.4
+messages per packet). Neither is hitting its batch limit: the binding constraint
+is the 1 ms flush deadline, which under load resolves closer to 5 ms because
+`Task.Delay` cannot do better. A publisher that needed tighter control would
+spin or use a timer wheel rather than the thread pool timer.
+
+---
+
+## Head to head
+
+| Subscribers | Unicast mean | Multicast mean | Unicast server CPU | Multicast server CPU |
+|---|---|---|---|---|
+| 100 | 2.79 ms | **0.34 ms** | 57% | **12%** |
+| 250 | ~5 ms | **0.46 ms** | ~110% | **13%** |
+| 500 | 11.37 ms | **0.69 ms** | 202% | **15%** |
+| 700 | 31.42 ms | — | 232% | — |
+| 800 | *not sustained* | — | — | — |
+| 1,000 | *not sustained* | **1.29 ms** | — | **18%** |
+| 8,000 | *not sustained* | **11.14 ms** | — | **44%** |
+
+Cost per delivered message, at each transport's sustained ceiling:
+
+| | Subscribers | Messages/s | Server CPU | CPU per message |
+|---|---|---|---|---|
+| Unicast | 700 | 69,864 | 232% | **33.2 µs** |
+| Multicast | 8,000 | 814,645 | 44% | **0.54 µs** |
+
+A 61× reduction in server CPU per delivered message, and 11× the subscribers at
+11.7× the throughput.
+
+The latency curve still rises with subscriber count under multicast (0.34 ms at
+100, 11.1 ms at 8,000) — but for a different reason. The publisher's cost is
+flat; what grows is the kernel's local replication and the contention among 8,000
+co-resident receivers on four cores. That is an artefact of measuring on one box,
+not a property of the design.
+
+### What multicast costs
+
+It is not free, and the trade is the whole reason the sequencing machinery
+exists. UDP multicast has no retransmission and no backpressure: a subscriber
+that falls behind loses packets and the publisher never learns of it. In exchange
+for O(1) publishing you take on:
+
+- **Detection instead of prevention** — sequence numbers on every packet turn
+  silent loss into detectable loss.
+- **Reordering tolerance** — loss and reordering are indistinguishable when a
+  packet arrives, so out-of-order packets are held in a bounded buffer, and a gap
+  is only declared when that buffer fills or a gap timer fires.
+- **Staleness over guessing** — a consumer that has detected a gap refuses to
+  apply incrementals until a snapshot restores a known book. A book built across
+  a gap is wrong and gives no sign of it.
+- **A recovery channel** — the periodic full snapshot bounds how long a gapped
+  subscriber stays dark.
+- **Optional A/B redundancy** — two lines over disjoint paths, arbitrated by
+  discarding whichever copy arrives second. One extra send per packet, still
+  independent of the audience, and it roughly squares the probability that a
+  packet is lost to any given subscriber.
+
+---
+
+## Order book micro-benchmark
+
+Three implementations of the same depth-limited book, each running the identical
+pre-generated operation stream. 200,000 operations, 7 trials, minimum reported —
+the fastest observed run is the one least perturbed by scheduling noise, which
+for a CPU-bound micro-benchmark estimates true cost better than an average.
+
+| Depth | Implementation | Mixed ns/op | Touch ns/op | Top-10 publish ns/op | Bytes per publish |
+|---|---|---|---|---|---|
+| 10 | SortedArrayBook | **24.9** | 3.7 | **11.3** | 0 |
+| 10 | LadderBook | 44.2 | 17.6 | 257.3 | 0 |
+| 10 | TreeBook | 46.4 | 45.5 | 160.5 | 104 |
+| 100 | SortedArrayBook | 38.1 | 2.6 | **8.1** | 0 |
+| 100 | LadderBook | **20.5** | 4.7 | 37.7 | 0 |
+| 100 | TreeBook | 77.5 | 8.4 | 209.7 | 152 |
+| 1000 | SortedArrayBook | 53.8 | 4.2 | **8.1** | 0 |
+| 1000 | LadderBook | **29.3** | 4.8 | 37.9 | 0 |
+| 1000 | TreeBook | 119.5 | 12.7 | 978.9 | 200 |
+
+Three results:
+
+1. **The array beats the tree at every depth measured on the update path**,
+   despite worse asymptotics — O(log d) search plus an O(d) shift against
+   O(log d). A depth-10 side is 80 bytes: one cache line, shifted by a `memmove`
+   the hardware executes at many bytes per cycle. The tree pays a dependent cache
+   miss per level of descent, and one miss costs more than the whole shift.
+   Complexity classes describe how cost *scales*, not what it *is* at a given
+   size.
+
+2. **The ranking inverts between the write path and the publish path.** The
+   ladder wins on mixed updates from around depth 100 (O(1), no comparisons, no
+   data movement), but the array is 3–100× faster at producing the top ten
+   levels, because that is a contiguous copy rather than a walk. Which structure
+   is "best" depends entirely on the read/write mix, and a market data feed
+   publishes constantly.
+
+3. **The tree allocates on every publish** — 104–200 bytes, growing with depth,
+   because enumerating a `SortedSet` allocates its traversal stack. On a
+   dissemination path that is not a throughput detail; it is a source of garbage
+   collection pauses at arbitrary moments. The array and ladder allocate nothing.
+
+For a depth-10 feed that publishes constantly, the array wins on both axes, and
+it is the configured default. Measurement chose it; asymptotics would not have.
+
+---
 
 ## Repeatability
 
-Each configuration was run four times (a fresh server process each time) to
-separate real capacity from run-to-run noise:
+Each configuration was run four times, with a fresh server process each time.
 
 | Point | Runs | Median | Min | Max | Spread |
 |---|---|---|---|---|---|
-| 500 subscribers, 100 upd/s | 4 | 11.47 ms | 10.53 | 12.38 | 1.17x |
-| 4,000 subscribers, 10 upd/s | 4 | 54.59 ms | 47.13 | 95.64 | 2.03x |
+| Unicast, 500 subscribers, 100 upd/s | 4 | 11.47 ms | 10.53 | 12.38 | 1.17× |
+| Unicast, 4,000 subscribers, 10 upd/s | 4 | 54.59 ms | 47.13 | 95.64 | 2.03× |
 
-Individual means - 500: 11.37, 10.53, 12.38, 11.57 ms. 4,000: 95.64, 47.13,
+Individual means — 500: 11.37, 10.53, 12.38, 11.57 ms. 4,000: 95.64, 47.13,
 55.23, 53.95 ms.
 
-The 4,000-subscriber spread is the important caveat. The 95.64 ms figure in the
-sweep table above is the slowest of four runs at that configuration; the median
-is closer to 55 ms. At that population the run is sensitive to how 4,000
-connections happen to land across threads and GC, and one sweep point is not
-enough to characterise it. The 500-subscriber point is stable enough to quote
-directly.
+The 4,000-subscriber spread is the important caveat. The 95.64 ms in the sweep
+table is the slowest of four runs at that configuration; the median is nearer
+55 ms. At that population the result is sensitive to how 4,000 connections happen
+to land across threads and garbage collection, and a single sweep point does not
+characterise it. The 500-subscriber point is stable enough to quote directly.
 
-## What sets the limit
+Read every figure at high subscriber counts as ±a factor of two unless it has
+repeat runs behind it.
 
-Two different things bound the system, on two different axes.
-
-**Latency is set by subscriber count, not by throughput.** Every update is
-written once per subscriber, so a single update's fan-out spans N writes and a
-subscriber's latency is essentially its position in that span. Two runs at
-identical message rates but different populations show it directly:
-
-| Run | Subscribers | Feed | Fan-out | Mean latency |
-|---|---|---|---|---|
-| A | 100 | 100 upd/s | 10,000 msg/s | 2.79 ms |
-| B | 1,000 | 10 upd/s | 10,000 msg/s | 23.92 ms |
-
-Same work per second; 10x the population costs 8.6x the latency. In run B the
-host sat at 94% of 400% - a quarter busy - so this is fan-out span, not CPU
-starvation. Subscriber count is bought with latency even on an idle box.
-
-**Throughput is set by CPU cost per message.** At the top of the sustained range
-(700 subscribers, 69,864 msg/s, 232% CPU) the server spends roughly **33 us of
-CPU per delivered message**. That is what puts the ceiling near 70-80k msg/s once
-the co-resident harness takes its share. The dominant term is the per-write trip
-through the `Grpc.Core` C-core interop layer; protobuf encoding is no longer
-significant, since each update is now encoded once for the whole population
-rather than once per subscriber.
+---
 
 ## Threats to validity
 
-Read these numbers as "this host, this topology", not as a property of the design.
+Read these numbers as "this host, this topology", not as properties of the
+design.
 
-- **The load generator shares the host.** Near the top of the range the harness
-  consumes roughly as much CPU as the server, so the box - not the server - is
-  the binding constraint. With subscribers on separate machines the server would
-  sustain more. The `Host CPU` column shows the remaining headroom.
-- **Loopback, not a network.** No NIC, no switch, no propagation delay. Absolute
-  latency on a real network would be higher; the fan-out span would not change.
-- **Variance grows with population.** Repeated runs at the same point differ, and
-  the spread widens as the host approaches saturation - see Repeatability.
-- **One instrument set.** Two instruments at depth 10. Depth changes snapshot
+- **The load generator shares the host.** Near the top of the unicast range the
+  harness consumes roughly as much CPU as the server, so the box — not the
+  server — is the binding constraint. The `Host CPU` column shows the remaining
+  headroom.
+- **Multicast replication is local.** On one machine the kernel copies each
+  datagram into every subscriber's socket buffer, work that switches would do on
+  a real network. The publisher's cost is genuinely flat, and that is the claim;
+  the total host cost is not, and the multicast latency curve reflects it.
+- **Loopback, not a network.** No NIC, no switch, no propagation delay, and —
+  importantly for multicast — **no real packet loss**. Zero gaps across every run
+  is a property of loopback, not evidence that the recovery machinery works. That
+  evidence comes from the test suite, which injects loss, duplication,
+  reordering and corruption directly.
+- **Variance grows with population**, as the repeatability section shows.
+- **One instrument set** — two instruments at depth 10. Depth changes snapshot
   size and therefore bytes per update.
 - **Snapshots are 5% of updates.** Snapshots are far larger than incrementals, so
   this ratio moves the byte rate substantially.
-- **File descriptor ceiling.** The container caps a process at 20,000 open files,
-  bounding one-connection-per-subscriber runs independently of CPU.
+- **File descriptor ceiling** — the container caps a process at 20,000 open
+  files, bounding one-connection-per-subscriber runs independently of CPU.
 - **The generator is paced on a 1 ms tick**, so feed rates above 1,000 upd/s per
   instrument arrive in small bursts rather than evenly spaced.
+- **`Grpc.Core` is the deprecated C-core binding.** The unicast per-message cost
+  would likely improve substantially on `Grpc.AspNetCore`; the O(N) fan-out term
+  would not.
+
+---
 
 ## Reproducing
 
 ```bash
-dotnet build Server/Server.csproj -c Release
-dotnet build Bench/Bench.csproj -c Release
+dotnet build MarketDataSimulator.sln -c Release
+dotnet test Tests/Tests.csproj -c Release
+./scripts/smoke.sh
 
-# A single operating point
-python3 bench/run.py --subscribers 700 --rates 50 --warmup 8 --duration 25 --tag demo
+# Order book micro-benchmark
+dotnet run --project Bench -c Release -- books --depths 10,100,1000
 
-# The two sweeps in this document
+# Unicast sweeps
 python3 bench/run.py --subscribers 100 200 300 400 500 600 700 800 --rates 50 \
     --warmup 8 --duration 25 --tag feed100
 python3 bench/run.py --subscribers 1000 2000 3000 4000 5000 --rates 5 \
     --warmup 8 --duration 25 --connect-batch 250 --connect-batch-delay-ms 20 --tag feed10
 
+# Multicast sweep
+python3 bench/run_multicast.py --subscribers 100 250 500 1000 2000 4000 6000 8000 \
+    --rates 50 --warmup 6 --duration 20 --tag mcast
+
 python3 bench/report.py feed100 feed10
 ```
 
 `--rates` is per instrument, so `--rates 50` with two instruments is a 100 upd/s
-feed. `bench/run.py` starts a fresh server per case, so runs cannot contaminate
-each other; raw per-run JSON lands in `bench/results/`.
+feed. Both runners start a fresh server per case, so runs cannot contaminate each
+other; raw per-run JSON lands in `bench/results/`.
+
+---
 
 ## Where the remaining headroom is
 
-Not pursued here, in rough order of expected value:
-
-1. **Replace `Grpc.Core` with `Grpc.AspNetCore`.** The C-core binding has been
-   unsupported since 2022 and the per-write interop cost is the single largest
-   term in the server's CPU budget.
-2. **Batch updates per message.** Real feeds carry many updates per packet. This
-   protocol sends one message per update, paying the per-write cost every time.
-3. **Encode once, write bytes N times.** Encoding is already once per update, but
-   each stream re-serialises the message object. A custom marshaller over a
-   pre-encoded payload would remove that.
-4. **Shard the dissemination loop.** A single reader drains the update queue. Not
-   the bottleneck at these rates, but it is a serialisation point.
+1. **Move the unicast path off `Grpc.Core`.** The C-core binding has been
+   unsupported since 2022 and its per-write interop cost is the largest single
+   term in the unicast server's CPU budget.
+2. **Measure multicast with subscribers on separate hosts.** It is the only way
+   to separate the publisher's flat cost from the kernel's local replication, and
+   the only way to observe real packet loss driving the recovery machinery.
+3. **Kernel bypass** (`AF_XDP`, `io_uring`, or a userspace stack) for the
+   publisher, once the transport is no longer the bottleneck.
+4. **Encode once, write bytes N times** on the unicast path — encoding is already
+   once per update, but each stream re-serialises the message object.

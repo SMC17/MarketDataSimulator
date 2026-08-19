@@ -1,0 +1,206 @@
+# Market Data Simulator
+
+A simulated exchange market data feed and the dissemination path that carries it
+to subscribers — built to be measured, and then rebuilt around what the
+measurements showed.
+
+The system generates order book updates for a set of instruments and broadcasts
+them to many concurrent subscribers, over either per-subscriber gRPC streams or
+sequenced UDP multicast. It ships with a load-generating harness, an order book
+micro-benchmark, a property-based test suite, and a written record of every
+number it claims.
+
+---
+
+## The short version
+
+Benchmarking the original design produced one result that mattered:
+
+> **Mean subscriber latency grows linearly with the number of subscribers, and the server never exceeds two of four cores.**
+
+Both follow from the same fact. TCP fan-out performs one write per subscriber per
+update, so disseminating a single update spans N writes and a subscriber's
+latency is essentially its position in that span. Two runs at an identical
+message rate but different audience sizes make it plain:
+
+| Subscribers | Feed rate | Fan-out | Mean latency |
+|---|---|---|---|
+| 100 | 100 upd/s | 10,000 msg/s | 2.79 ms |
+| 1,000 | 10 upd/s | 10,000 msg/s | 23.92 ms |
+
+Identical work per second; ten times the audience costs roughly nine times the
+latency, on a host that was three-quarters idle. No amount of tuning removes an
+O(N) term.
+
+Exchanges solved this a long time ago, and not by tuning. They multicast: the
+publisher sends once and the network performs the replication. Implementing that
+here removed the term entirely — the server now emits **101.9 packets/s whether
+100 or 4,000 subscribers are listening**:
+
+| Subscribers | Unicast mean | Multicast mean | Multicast throughput | Server CPU |
+|---|---|---|---|---|
+| 100 | 2.79 ms | **0.34 ms** | 10,195 msg/s | 12% |
+| 500 | 11.37 ms | **0.69 ms** | 50,999 msg/s | 15% |
+| 1,000 | not sustained | **1.29 ms** | 101,997 msg/s | 18% |
+| 4,000 | not sustained | **4.35 ms** | 408,084 msg/s | 31% |
+
+Zero gaps and zero stale subscribers throughout. Peak measured throughput was
+**1,001,892 messages/second** to 1,000 subscribers at 1.61 ms mean latency.
+
+Batching then produced a result worth pausing on: packing messages into
+datagrams cut mean latency by 2.4×, p99 by 7× and host CPU by 7.4×. Batching
+normally *trades* latency for throughput — but in a broadcast system per-packet
+cost is paid once per subscriber, so halving the packet count removes that work a
+thousand times over, and the saturation causing the latency disappears with it.
+
+Full methodology, the complete frontier, repeatability data and threats to
+validity are in **[BENCHMARKS.md](BENCHMARKS.md)**.
+
+---
+
+## What is in here
+
+```
+Common/Books/     Three order book implementations behind one interface
+Common/Feed/      Binary wire format, multicast publisher, decoder
+Common/Server/    Unicast (gRPC) and multicast dissemination services
+Server/           The simulated matching engine and its configuration
+Client/           A reference subscriber that prints the feed
+Bench/            Load generator, latency histogram, order book micro-benchmark
+Tests/            Property-based and differential test suite
+bench/            Sweep runners and raw results
+```
+
+### Order books
+
+Three implementations of the same depth-limited book, chosen so the trade-offs
+could be measured rather than argued:
+
+| | Update | Touch | Publish top-10 | Notes |
+|---|---|---|---|---|
+| `SortedArrayBook` | O(log d) search + O(d) shift | O(1) | O(1) contiguous copy | Fastest at display depths |
+| `LadderBook` | O(1) | O(1) amortised, bit-scan | O(d) bit-scan per level | Needs a bounded price band |
+| `TreeBook` | O(log d) | O(log d) | O(d) pointer chase | Unbounded, sparse price spaces |
+
+Measured, 4 vCPU, minimum of 7 trials over 200k operations:
+
+| Depth | Mixed ns/op (array / ladder / tree) | Top-10 publish ns/op | Bytes per publish |
+|---|---|---|---|
+| 10 | 24.9 / 44.2 / 46.4 | 11.3 / 257.3 / 160.5 | 0 / 0 / **104** |
+| 100 | 38.1 / **20.5** / 77.5 | **8.1** / 37.7 / 209.7 | 0 / 0 / **152** |
+| 1000 | 53.8 / **29.3** / 119.5 | **8.1** / 37.9 / 978.9 | 0 / 0 / **200** |
+
+Two results worth stating. The ranking **inverts** between the write path and
+the publish path — the ladder wins on updates from around depth 100, while the
+array is 3–100× faster at producing the top ten levels, because that is a
+contiguous copy rather than a walk. And the tree **allocates on every publish**
+(enumerating a `SortedSet` allocates its traversal stack), which on a
+dissemination path is not a throughput detail but a source of collection pauses.
+
+For a depth-10 feed that publishes constantly, the array wins on both axes, and
+that is the configured default. Asymptotics chose the wrong structure here;
+measurement chose the right one.
+
+### The feed protocol
+
+Hand-rolled, fixed-layout, explicitly little-endian. Every field sits at a known
+offset, so encoding is a handful of stores into a caller-supplied span and
+decoding a handful of loads — no reflection, no schema walk, no allocation on
+either path. Packets are capped below the Ethernet MTU, because a fragmented
+datagram is lost in its entirety if any one fragment is dropped.
+
+Multicast buys O(1) publishing at the price of reliability: there is no
+retransmission and no backpressure, so a subscriber that falls behind loses
+packets and the publisher never finds out. The feed is therefore **sequenced**,
+which turns silent loss into detectable loss, and the consumer:
+
+- **holds out-of-order packets** in a bounded buffer, because loss and reordering
+  are indistinguishable at the moment a packet arrives;
+- **declares a gap** when the buffer fills or a gap timer fires, and then marks
+  itself **stale**;
+- **refuses to apply incrementals while stale**, because a book built across a
+  gap is wrong and gives no sign of it — strictly worse than admitting ignorance;
+- **recovers** from the next periodic full snapshot;
+- **arbitrates A/B lines** by discarding whichever copy of a packet arrives
+  second, which is the same logic that suppresses network duplicates.
+
+### Testing
+
+61 tests, all deterministic and seeded. The interesting ones are not unit tests:
+
+- **Differential testing** — random operation streams are applied to all three
+  book implementations and their state compared after *every* operation, so a
+  divergence is attributed to the operation that caused it.
+- **Property-based testing** with **automatic shrinking** — failures are reduced
+  to a minimal counterexample and reported with the seed that reproduces them.
+- **Feed integrity** — that an incremental stream reconstructs the publisher's
+  book exactly; that a snapshot resynchronises a drifted subscriber; that the
+  book never crosses.
+- **Adversarial transport** — gaps, duplicates, reordering, truncation, bogus
+  message counts and foreign traffic, fed directly to a decoder that owns no
+  socket, so the paths that are near-impossible to provoke over a real network
+  are exercised deterministically.
+
+These found four real bugs that the unit tests did not, each recorded in the
+commit that fixed it — a stale-cache bug in the ladder's depth cap, a malformed
+packet that could permanently desynchronise a consumer, false gap reports under
+reordering, and a gap flush that left the consumer silently behind the feed.
+
+---
+
+## Running it
+
+```bash
+dotnet build MarketDataSimulator.sln -c Release
+dotnet test Tests/Tests.csproj -c Release       # 61 tests
+./scripts/smoke.sh                              # end-to-end, both transports
+```
+
+Run the simulator and a reference subscriber:
+
+```bash
+cd Server/bin/Release/net6.0 && dotnet Server.dll        # unicast gRPC on :14000
+cd Client/bin/Release/net6.0 && dotnet Client.dll        # then type: Subscribe 1
+```
+
+Benchmarks:
+
+```bash
+# Order book micro-benchmark
+dotnet run --project Bench -c Release -- books --depths 10,100,1000
+
+# Unicast dissemination sweep
+python3 bench/run.py --subscribers 100 200 400 600 --rates 50 --tag unicast
+
+# Multicast dissemination sweep
+python3 bench/run_multicast.py --subscribers 100 1000 4000 --rates 50 --tag mcast
+
+python3 bench/report.py unicast
+```
+
+Every run starts a fresh server process, so no run can contaminate the next, and
+raw per-run JSON lands in `bench/results/`.
+
+### Configuration
+
+`Server/appsettings.json`, or any path passed as the first argument. Notable
+settings: `BookImplementation` (`SortedArray`, `Ladder`, `Tree`), per-instrument
+`Depth` / `UpdatesPerSecond` / `SnapshotProbability`, and the `Multicast` block
+(`Enabled`, `Group`, `MaxBatch`, `SnapshotIntervalSeconds`).
+
+---
+
+## Notes on the environment
+
+All measurements were taken on a 4 vCPU Intel Xeon at 2.80GHz with the load
+generator running **on the same host**, over loopback. That is stated wherever a
+number is, because it matters: near the top of the unicast range the harness
+consumes about as much CPU as the server, so the box rather than the server is
+the binding constraint. The multicast figures carry their own caveat — on a
+single host the kernel still replicates each datagram to every subscriber's
+socket, work that switches would do on a real network. The server-side cost is
+flat regardless, which is the claim being made.
+
+`BENCHMARKS.md` lists the rest of the threats to validity, the sustained/not-sustained
+criteria each run is judged against, and the run-to-run variance at each
+operating point.
