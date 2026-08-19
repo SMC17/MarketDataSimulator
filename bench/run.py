@@ -57,12 +57,13 @@ def process_rss_mb(pid):
         return None
 
 
-def write_config(path, port, instruments, rate, depth, snapshot_probability, run_for):
+def write_config(path, port, instruments, rate, depth, snapshot_probability, run_for, use_ring=False):
     config = {
         "Port": port,
         "VerboseLogging": False,
         "StatisticsIntervalSeconds": 1,
         "RunForSeconds": run_for,
+        "UseRingQueue": use_ring,
         "Instruments": [
             {
                 "Id": i + 1,
@@ -90,7 +91,7 @@ def run_case(args, subscribers, rate, tag):
 
     config_path = CONFIGS / f"{label}.json"
     config = write_config(config_path, args.port, args.instruments, rate,
-                          args.depth, args.snapshot_probability, run_for)
+                          args.depth, args.snapshot_probability, run_for, args.ring)
 
     server_log = RESULTS / f"{label}.server.log"
     log_handle = server_log.open("w")
@@ -212,6 +213,8 @@ def main():
     parser.add_argument("--connect-batch", type=int, default=200)
     parser.add_argument("--connect-batch-delay-ms", type=float, default=25)
     parser.add_argument("--port", type=int, default=14000)
+    parser.add_argument("--ring", action="store_true",
+                        help="route the engine-to-fan-out hand-off through lock-free rings")
     parser.add_argument("--tag", default="sweep")
     parser.add_argument("--summary", default=None)
     args = parser.parse_args()

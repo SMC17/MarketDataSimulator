@@ -572,6 +572,56 @@ allocation silently, and nothing else in a test suite would notice.
 
 ---
 
+## A lock-free queue, and why it did not help
+
+`RingBuffer<T>` is a bounded single-producer/single-consumer queue with no locks and no
+allocation: each side owns its own cursor, published with a release store and read with an
+acquire load, so neither side ever performs an interlocked read-modify-write. The cursors are
+padded onto separate cache lines — without that, the producer's write index and the consumer's
+read index share a line and every write invalidates the other core's copy, which is enough on
+its own to make a lock-free queue slower than a locked one.
+
+In isolation it is decisively faster than the `Channel` it was built to replace:
+
+| Queue | ns/item | M items/s | B/item |
+|---|---|---|---|
+| RingBuffer, single thread | **3.0** | 338.6 | 0 |
+| Channel, single thread | 50.9 | 19.7 | 0 |
+| RingBuffer, producer + consumer | **5.8** | 173.1 | 0 |
+| RingBuffer batched, producer + consumer | **4.9** | 205.1 | 0 |
+| Channel, producer + consumer | 118.5 | 8.4 | 0 |
+
+**20.5× the channel's throughput on the concurrent hand-off. It made no measurable difference
+end to end.**
+
+Wired into the dissemination path behind `UseRingQueue` and measured at 500 subscribers, three
+trials each, the two are indistinguishable — channel means of 8.7, 14.9 and 23.1 ms against ring
+means of 20.3 and 21.6 ms. The spread within each option is larger than the gap between them, so
+the honest reading is *no difference*, not *the ring is worse*.
+
+The arithmetic says why, and it is worth doing before optimising rather than after:
+
+> The hand-off sits **upstream of fan-out**. It carries the *update* rate — 100/s — not the
+> *message* rate of 50,000/s, because one update becomes 500 messages only after it leaves the
+> queue. Saving 48 ns on 100 operations per second is **4.8 µs/s, or 0.0005% of one core.**
+
+No queue implementation could have mattered there. The 33 µs/message the server actually spends
+is in the gRPC write path, which is downstream and runs 500× more often.
+
+The ring stays in the repository, switchable and defaulted off, because the measurement is the
+point: it is a correct, tested, genuinely 20×-faster component in the wrong place. The lesson is
+not that lock-free queues are useless — it is that an optimisation's value is set by how often
+its code runs, and on a fan-out path the amplification happens *after* this stage.
+
+Two further notes for anyone tempted to put it somewhere else here. It spin-waits before
+blocking, which is right for one dedicated consumer thread and badly wrong for per-subscriber
+queues — thousands of spinning subscribers would burn every core doing nothing. And it is SPSC
+by construction, so each matching engine gets its own ring and the consumer drains them
+round-robin, rather than several producers sharing one queue and needing an interlocked cursor
+after all.
+
+---
+
 ## Repeatability
 
 Each configuration was run four times, with a fresh server process each time.

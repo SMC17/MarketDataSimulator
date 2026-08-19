@@ -1,0 +1,32 @@
+[
+  {
+    "Name": "RingBuffer (single thread)",
+    "Seconds": 0.014767,
+    "NanosecondsPerItem": 2.95,
+    "BytesPerItem": 0
+  },
+  {
+    "Name": "Channel (single thread)",
+    "Seconds": 0.254258,
+    "NanosecondsPerItem": 50.85,
+    "BytesPerItem": 0
+  },
+  {
+    "Name": "RingBuffer (producer \u002B consumer)",
+    "Seconds": 0.028892,
+    "NanosecondsPerItem": 5.78,
+    "BytesPerItem": 0
+  },
+  {
+    "Name": "RingBuffer batched (prod \u002B cons)",
+    "Seconds": 0.024383,
+    "NanosecondsPerItem": 4.88,
+    "BytesPerItem": 0
+  },
+  {
+    "Name": "Channel (producer \u002B consumer)",
+    "Seconds": 0.592757,
+    "NanosecondsPerItem": 118.55,
+    "BytesPerItem": 0
+  }
+]
