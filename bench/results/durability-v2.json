@@ -1,5 +1,5 @@
 {
-  "TimestampUtc": "2026-08-19T19:13:32.5033642+00:00",
+  "TimestampUtc": "2026-08-19T19:30:05.8342953+00:00",
   "Runtime": ".NET 8.0.30",
   "OperatingSystem": "Ubuntu 24.04.3 LTS",
   "Architecture": "X64",
@@ -18,11 +18,11 @@
       "Records": 5000,
       "SyncIntervalMilliseconds": 200,
       "MedianSyncs": 0,
-      "MedianNanoseconds": 1097.97,
-      "MinNanoseconds": 1044.82,
-      "MaxNanoseconds": 2211.13,
-      "AppendsPerSecond": 910770,
-      "MegabytesPerSecond": 86.86,
+      "MedianNanoseconds": 976.74,
+      "MinNanoseconds": 958.01,
+      "MaxNanoseconds": 2088.2,
+      "AppendsPerSecond": 1023815,
+      "MegabytesPerSecond": 97.64,
       "BytesAllocatedPerAppend": 0
     },
     {
@@ -31,12 +31,12 @@
       "PayloadBytes": 64,
       "Records": 5000,
       "SyncIntervalMilliseconds": 1,
-      "MedianSyncs": 2,
-      "MedianNanoseconds": 2095.61,
-      "MinNanoseconds": 1538.88,
-      "MaxNanoseconds": 6806.56,
-      "AppendsPerSecond": 477187,
-      "MegabytesPerSecond": 45.51,
+      "MedianSyncs": 4,
+      "MedianNanoseconds": 2318.34,
+      "MinNanoseconds": 2149.46,
+      "MaxNanoseconds": 3507.92,
+      "AppendsPerSecond": 431343,
+      "MegabytesPerSecond": 41.14,
       "BytesAllocatedPerAppend": 0
     },
     {
@@ -46,11 +46,11 @@
       "Records": 5000,
       "SyncIntervalMilliseconds": 200,
       "MedianSyncs": 79,
-      "MedianNanoseconds": 30710.73,
-      "MinNanoseconds": 24860.06,
-      "MaxNanoseconds": 39239.33,
-      "AppendsPerSecond": 32562,
-      "MegabytesPerSecond": 3.11,
+      "MedianNanoseconds": 27301.73,
+      "MinNanoseconds": 17837.92,
+      "MaxNanoseconds": 42412.73,
+      "AppendsPerSecond": 36628,
+      "MegabytesPerSecond": 3.49,
       "BytesAllocatedPerAppend": 0
     },
     {
@@ -60,11 +60,11 @@
       "Records": 5000,
       "SyncIntervalMilliseconds": 200,
       "MedianSyncs": 5000,
-      "MedianNanoseconds": 1417223.42,
-      "MinNanoseconds": 1122536.19,
-      "MaxNanoseconds": 1477936.15,
-      "AppendsPerSecond": 706,
-      "MegabytesPerSecond": 0.07,
+      "MedianNanoseconds": 972646.2,
+      "MinNanoseconds": 898242.37,
+      "MaxNanoseconds": 1196500.72,
+      "AppendsPerSecond": 1028,
+      "MegabytesPerSecond": 0.1,
       "BytesAllocatedPerAppend": 0
     },
     {
@@ -74,42 +74,42 @@
       "Records": 5000,
       "SyncIntervalMilliseconds": 0,
       "MedianSyncs": 0,
-      "MedianNanoseconds": 980.14,
-      "MinNanoseconds": 826.59,
-      "MaxNanoseconds": 3048.51,
-      "AppendsPerSecond": 1020263,
-      "MegabytesPerSecond": 83.68,
+      "MedianNanoseconds": 813.74,
+      "MinNanoseconds": 755.14,
+      "MaxNanoseconds": 1676.61,
+      "AppendsPerSecond": 1228894,
+      "MegabytesPerSecond": 100.79,
       "BytesAllocatedPerAppend": 0
     }
   ],
   "Recovery": {
     "Messages": 50000,
     "CheckpointSequence": 47500,
-    "FullMedianMilliseconds": 23.6,
-    "FullMinMilliseconds": 22.39,
-    "FullMaxMilliseconds": 24.74,
-    "CheckpointMedianMilliseconds": 3.42,
-    "CheckpointMinMilliseconds": 3.23,
-    "CheckpointMaxMilliseconds": 3.77,
-    "SpeedUp": 6.9
+    "FullMedianMilliseconds": 24.68,
+    "FullMinMilliseconds": 21,
+    "FullMaxMilliseconds": 40.83,
+    "CheckpointMedianMilliseconds": 2.92,
+    "CheckpointMinMilliseconds": 2.64,
+    "CheckpointMaxMilliseconds": 3.84,
+    "SpeedUp": 8.45
   },
   "RangeReads": [
     {
       "Name": "sparse index",
       "Queries": 100,
       "IndexEntries": 196,
-      "MedianNanosecondsPerRequest": 84949.51,
-      "MinNanosecondsPerRequest": 78166.45,
-      "MaxNanosecondsPerRequest": 91325.05,
+      "MedianNanosecondsPerRequest": 73567.12,
+      "MinNanosecondsPerRequest": 70164.95,
+      "MaxNanosecondsPerRequest": 81713.49,
       "BytesAllocatedPerRequest": 1736
     },
     {
       "Name": "segment scan",
       "Queries": 100,
       "IndexEntries": 0,
-      "MedianNanosecondsPerRequest": 2299824.34,
-      "MinNanosecondsPerRequest": 895360.13,
-      "MaxNanosecondsPerRequest": 2635666.5,
+      "MedianNanosecondsPerRequest": 1946832.33,
+      "MinNanosecondsPerRequest": 927098.33,
+      "MaxNanosecondsPerRequest": 2530302.62,
       "BytesAllocatedPerRequest": 5848
     }
   ]
