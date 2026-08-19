@@ -270,12 +270,14 @@ namespace MarketData.Common.Server
             var snapshot = _clientSnapshot;
             var clients = snapshot.Length;
             long liveDrops = 0;
+            long liveFailures = 0;
             long outboundQueued = 0;
             var maxOutboundQueued = 0;
 
             for (var i = 0; i < snapshot.Length; i++)
             {
                 liveDrops += snapshot[i].DroppedUpdates;
+                liveFailures += snapshot[i].FailedSends;
 
                 var queued = snapshot[i].QueuedOutbound;
                 outboundQueued += queued;
@@ -292,7 +294,7 @@ namespace MarketData.Common.Server
                 Interlocked.Read(ref _disseminatedUpdates),
                 Interlocked.Read(ref _sentMessages),
                 Interlocked.Read(ref _droppedUpdates) + liveDrops,
-                Interlocked.Read(ref _failedSends),
+                Interlocked.Read(ref _failedSends) + liveFailures,
                 outboundQueued,
                 maxOutboundQueued);
         }
@@ -374,6 +376,7 @@ namespace MarketData.Common.Server
                     // The client is about to leave _clientSnapshot, so GetStatistics will stop
                     // seeing its counter. Fold it in once, here, as it goes.
                     Interlocked.Add(ref _droppedUpdates, client.DroppedUpdates);
+                    Interlocked.Add(ref _failedSends, client.FailedSends);
 
                     if (VerboseLogging)
                         Console.WriteLine($"Removed client {client.Host}");
