@@ -235,52 +235,68 @@ namespace MarketData.Tests
         }
 
         /// <summary>
-        /// Every hardware path through the vectorized lower bound must give the same answer.
+        /// The vectorized lower bound agrees with the reference across its crossover.
         /// </summary>
         /// <remarks>
-        /// The AVX-512, AVX2, SSE and scalar paths are selected at JIT time from what the CPU
-        /// reports, so a single test run only ever executes one of them. This runs the differential
-        /// comparison in a child process with the intrinsics disabled, which forces the others.
+        /// <see cref="VectorizedBook"/> scans with vector instructions below 64 live levels and
+        /// binary-searches above, so the depths either side of that boundary are where an
+        /// off-by-one would hide. Both regimes are compared here against the straightforward
+        /// implementation.
+        /// <para>
+        /// This covers the boundary, not the instruction set. Which of the AVX-512, AVX2, SSE and
+        /// scalar bodies actually executes is decided by the JIT from what the CPU reports, and one
+        /// process only ever runs one of them - setting the switches from inside the test would
+        /// change nothing, because the methods are already compiled. Forcing the other paths needs
+        /// a fresh process with the intrinsics disabled, which the CI workflow does by re-running
+        /// these tests under DOTNET_EnableAVX512F=0, DOTNET_EnableAVX2=0 and
+        /// DOTNET_EnableHWIntrinsic=0.
+        /// </para>
         /// </remarks>
         [Theory]
-        [InlineData("DOTNET_EnableAVX512F")]
-        [InlineData("DOTNET_EnableAVX2")]
-        [InlineData("DOTNET_EnableHWIntrinsic")]
-        public void EveryVectorPathAgreesWithTheReference(string disableVariable)
+        [InlineData(63)]
+        [InlineData(64)]
+        [InlineData(65)]
+        [InlineData(128)]
+        public void TheVectorizedLowerBoundAgreesAcrossItsCrossover(int depth)
         {
-            var previous = Environment.GetEnvironmentVariable(disableVariable);
-            Environment.SetEnvironmentVariable(disableVariable, "0");
+            var random = new Random(depth * 7919);
+            var reference = new SortedArrayBook(depth);
+            var vectorized = new VectorizedBook(depth);
+            var deepest = 0;
 
-            try
+            void Apply(BookOperation operation)
             {
-                // The JIT has already compiled the methods in this process, so this run does not by
-                // itself re-select the path; the differential sweep below is still worth running at
-                // the crossover depths, and the CI matrix sets these variables process-wide.
-                foreach (var depth in new[] { 63, 64, 65, 128 })
-                {
-                    var random = new Random(depth * 7919);
-                    var reference = new SortedArrayBook(depth);
-                    var vectorized = new VectorizedBook(depth);
+                BookOperations.Apply(reference, operation);
+                BookOperations.Apply(vectorized, operation);
 
-                    for (var i = 0; i < 2_000; i++)
-                    {
-                        var operation = BookOperations.GenerateOne(random, -200, 200);
+                deepest = Math.Max(deepest, Math.Max(reference.Count(Side.Bid), reference.Count(Side.Ask)));
 
-                        BookOperations.Apply(reference, operation);
-                        BookOperations.Apply(vectorized, operation);
-
-                        AssertSameLevels(nameof(SortedArrayBook), reference, nameof(VectorizedBook),
-                            vectorized, operation, depth);
-                    }
-
-                    AssertSameLookups(nameof(SortedArrayBook), reference, nameof(VectorizedBook),
-                        vectorized, depth);
-                }
+                AssertSameLevels(nameof(SortedArrayBook), reference, nameof(VectorizedBook),
+                    vectorized, operation, depth);
             }
-            finally
+
+            // Fill both sides to capacity first. A purely random stream at these depths settles
+            // well short of 64 live levels - removals keep pace with insertions - so without this
+            // the deep cases would silently re-test the vector path a second time instead of the
+            // search path they exist for.
+            foreach (var side in new[] { Side.Bid, Side.Ask })
             {
-                Environment.SetEnvironmentVariable(disableVariable, previous);
+                for (var i = 0; i < depth; i++)
+                    Apply(new BookOperation(BookOperationKind.Upsert, side, i - depth / 2, (uint)(i + 1)));
             }
+
+            for (var i = 0; i < 4_000; i++)
+                Apply(BookOperations.GenerateOne(random, -200, 200));
+
+            // The regime this test exists for must actually have been entered.
+            if (depth > 64)
+            {
+                Assert.True(deepest > 64,
+                    $"depth {depth}: never exceeded 64 live levels, so the search path was not reached.");
+            }
+
+            AssertSameLookups(nameof(SortedArrayBook), reference, nameof(VectorizedBook),
+                vectorized, depth);
         }
 
         private static void AssertSameLevels(string expectedName, IOrderBook expected,

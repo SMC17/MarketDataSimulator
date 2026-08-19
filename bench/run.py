@@ -30,6 +30,15 @@ STATS_RE = re.compile(
     r"outQueued=(\d+) outMax=(\d+)")
 
 
+def boot_id():
+    """Identifies the running kernel instance, so a host swap mid-sweep is visible."""
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as handle:
+            return handle.read().strip()
+    except OSError:
+        return None
+
+
 def host_cpu_sample():
     """Aggregate jiffies from /proc/stat -> (busy, total)."""
     with open("/proc/stat") as handle:
@@ -173,6 +182,11 @@ def run_case(args, subscribers, rate, tag):
     steady = [s for s in stats if s[0] >= result["ConnectedSubscribers"] * 0.99] or stats
 
     result.update({
+        # Which kernel instance produced this run. Containers here can be replaced
+        # between phases of a sweep, and a document that mixes two hosts in one
+        # table is indistinguishable from one that does not unless every run says
+        # where it came from. bench/docgen.py refuses to render across a mismatch.
+        "HostBootId": boot_id(),
         "UpdateRatePerInstrument": rate,
         "Instruments": args.instruments,
         "AggregateUpdateRate": rate * args.instruments,

@@ -38,3 +38,21 @@ jobs:
 
       - name: Feed smoke test
         run: ./scripts/smoke.sh
+
+      - name: Documentation matches the recorded measurements
+        # The tables in README.md and BENCHMARKS.md are generated from
+        # bench/results/*.json. This fails if any of them has been edited by hand
+        # or left behind by a re-measurement, which is how a published figure came
+        # to disagree with its own results file by a factor of six.
+        run: python3 bench/docgen.py --check
+
+      - name: Vectorized book agrees with the reference on every hardware path
+        # The AVX-512, AVX2 and scalar lower-bound paths are selected at JIT time,
+        # so one process only ever exercises one of them. Disabling the intrinsics
+        # forces the others through the same differential comparison.
+        run: |
+          for disable in DOTNET_EnableAVX512F DOTNET_EnableAVX2 DOTNET_EnableHWIntrinsic; do
+            echo "=== $disable=0 ==="
+            env "$disable=0" dotnet test Tests/Tests.csproj -c Release --no-build \
+              --filter "FullyQualifiedName~BookDepthTests|FullyQualifiedName~OrderBookTests"
+          done

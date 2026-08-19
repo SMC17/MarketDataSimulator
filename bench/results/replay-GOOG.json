@@ -9,7 +9,7 @@
       "RowsCompared": 112672,
       "RowsMatched": 112672,
       "MatchRate": 1,
-      "MessagesPerSecond": 1213803,
+      "MessagesPerSecond": 1672643,
       "FirstMismatchRow": -1,
       "FirstMismatchDetail": null,
       "NegativeLevels": 0,
@@ -21,7 +21,7 @@
       "RowsCompared": 112672,
       "RowsMatched": 112672,
       "MatchRate": 1,
-      "MessagesPerSecond": 1160851,
+      "MessagesPerSecond": 1508026,
       "FirstMismatchRow": -1,
       "FirstMismatchDetail": null,
       "NegativeLevels": 0,
@@ -33,7 +33,7 @@
       "RowsCompared": 112672,
       "RowsMatched": 112672,
       "MatchRate": 1,
-      "MessagesPerSecond": 100041,
+      "MessagesPerSecond": 164977,
       "FirstMismatchRow": -1,
       "FirstMismatchDetail": null,
       "NegativeLevels": 0,
@@ -45,7 +45,7 @@
       "RowsCompared": 112672,
       "RowsMatched": 112672,
       "MatchRate": 1,
-      "MessagesPerSecond": 381941,
+      "MessagesPerSecond": 477730,
       "FirstMismatchRow": -1,
       "FirstMismatchDetail": null,
       "NegativeLevels": 0,
@@ -56,82 +56,82 @@
     {
       "Implementation": "SortedArray",
       "MessagesApplied": 112673,
-      "RowsCompared": 112672,
-      "RowsMatched": 48,
-      "MatchRate": 0.000426,
-      "MessagesPerSecond": 1419722,
-      "FirstMismatchRow": 35,
-      "FirstMismatchDetail": "row 35 after 34200.203135277 VisibleExecution #16155653 100@5794000 dir 1: bid level 5: expected 509@5785000, got 500@5785000",
-      "NegativeLevels": 3446,
+      "RowsCompared": 112673,
+      "RowsMatched": 111,
+      "MatchRate": 0.000985,
+      "MessagesPerSecond": 1840919,
+      "FirstMismatchRow": 1,
+      "FirstMismatchDetail": "row 1 after 34200.015105074 VisibleExecution #15818974 4@5794000 dir 1: ask level 1: expected 100@5802300, got 0@0",
+      "NegativeLevels": 3457,
       "HiddenExecutions": 3913
     },
     {
       "Implementation": "Vectorized",
       "MessagesApplied": 112673,
-      "RowsCompared": 112672,
-      "RowsMatched": 48,
-      "MatchRate": 0.000426,
-      "MessagesPerSecond": 1408632,
-      "FirstMismatchRow": 35,
-      "FirstMismatchDetail": "row 35 after 34200.203135277 VisibleExecution #16155653 100@5794000 dir 1: bid level 5: expected 509@5785000, got 500@5785000",
-      "NegativeLevels": 3446,
+      "RowsCompared": 112673,
+      "RowsMatched": 111,
+      "MatchRate": 0.000985,
+      "MessagesPerSecond": 1795274,
+      "FirstMismatchRow": 1,
+      "FirstMismatchDetail": "row 1 after 34200.015105074 VisibleExecution #15818974 4@5794000 dir 1: ask level 1: expected 100@5802300, got 0@0",
+      "NegativeLevels": 3457,
       "HiddenExecutions": 3913
     },
     {
       "Implementation": "Ladder",
       "MessagesApplied": 112673,
-      "RowsCompared": 112672,
-      "RowsMatched": 48,
-      "MatchRate": 0.000426,
-      "MessagesPerSecond": 891611,
-      "FirstMismatchRow": 35,
-      "FirstMismatchDetail": "row 35 after 34200.203135277 VisibleExecution #16155653 100@5794000 dir 1: bid level 5: expected 509@5785000, got 500@5785000",
-      "NegativeLevels": 3446,
+      "RowsCompared": 112673,
+      "RowsMatched": 111,
+      "MatchRate": 0.000985,
+      "MessagesPerSecond": 1460474,
+      "FirstMismatchRow": 1,
+      "FirstMismatchDetail": "row 1 after 34200.015105074 VisibleExecution #15818974 4@5794000 dir 1: ask level 1: expected 100@5802300, got 0@0",
+      "NegativeLevels": 3457,
       "HiddenExecutions": 3913
     },
     {
       "Implementation": "Tree",
       "MessagesApplied": 112673,
-      "RowsCompared": 112672,
-      "RowsMatched": 48,
-      "MatchRate": 0.000426,
-      "MessagesPerSecond": 971489,
-      "FirstMismatchRow": 35,
-      "FirstMismatchDetail": "row 35 after 34200.203135277 VisibleExecution #16155653 100@5794000 dir 1: bid level 5: expected 509@5785000, got 500@5785000",
-      "NegativeLevels": 3446,
+      "RowsCompared": 112673,
+      "RowsMatched": 111,
+      "MatchRate": 0.000985,
+      "MessagesPerSecond": 1278383,
+      "FirstMismatchRow": 1,
+      "FirstMismatchDetail": "row 1 after 34200.015105074 VisibleExecution #15818974 4@5794000 dir 1: ask level 1: expected 100@5802300, got 0@0",
+      "NegativeLevels": 3457,
       "HiddenExecutions": 3913
     }
   ],
   "CumulativeAccuracyByDepth": [
     {
       "Levels": 1,
-      "RowsExact": 229,
-      "Share": 0.002032
+      "RowsExact": 1512,
+      "Share": 0.013419
     },
     {
       "Levels": 2,
-      "RowsExact": 188,
-      "Share": 0.001669
+      "RowsExact": 992,
+      "Share": 0.008804
     },
     {
       "Levels": 3,
-      "RowsExact": 172,
-      "Share": 0.001527
+      "RowsExact": 691,
+      "Share": 0.006133
     },
     {
       "Levels": 4,
-      "RowsExact": 56,
-      "Share": 0.000497
+      "RowsExact": 366,
+      "Share": 0.003248
     },
     {
       "Levels": 5,
-      "RowsExact": 48,
-      "Share": 0.000426
+      "RowsExact": 111,
+      "Share": 0.000985
     }
   ],
   "Parser": {
-    "MessagesPerSecond": 8703740,
-    "MegabytesPerSecond": 341.4,
+    "MessagesPerSecond": 13569407,
+    "MegabytesPerSecond": 532.3,
     "BytesPerMessage": 0
   }
 }

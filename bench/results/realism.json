@@ -1,0 +1,42 @@
+[
+  {
+    "Name": "AMZN (real)",
+    "Observations": 13487,
+    "ExcessKurtosis": 23.487,
+    "AbsAutocorrelation1": 0.17933,
+    "AbsAutocorrelation10": 0.11487,
+    "ReturnAutocorrelation1": -0.00408,
+    "Beyond3Sigma": 0.016905,
+    "Beyond5Sigma": 0.002892
+  },
+  {
+    "Name": "GOOG (real)",
+    "Observations": 5633,
+    "ExcessKurtosis": 24.199,
+    "AbsAutocorrelation1": 0.22624,
+    "AbsAutocorrelation10": 0.09148,
+    "ReturnAutocorrelation1": -0.04438,
+    "Beyond3Sigma": 0.012072,
+    "Beyond5Sigma": 0.003728
+  },
+  {
+    "Name": "MSFT (real)",
+    "Observations": 29789,
+    "ExcessKurtosis": 14.525,
+    "AbsAutocorrelation1": 0.02534,
+    "AbsAutocorrelation10": 0.0391,
+    "ReturnAutocorrelation1": 0.01172,
+    "Beyond3Sigma": 0.009399,
+    "Beyond5Sigma": 0.009399
+  },
+  {
+    "Name": "simulator",
+    "Observations": 19999,
+    "ExcessKurtosis": 7969.825,
+    "AbsAutocorrelation1": 0.2244,
+    "AbsAutocorrelation10": 0.28083,
+    "ReturnAutocorrelation1": -0.02876,
+    "Beyond3Sigma": 0.0062,
+    "Beyond5Sigma": 0.00055
+  }
+]
