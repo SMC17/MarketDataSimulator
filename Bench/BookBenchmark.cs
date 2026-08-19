@@ -52,7 +52,9 @@ namespace MarketData.Bench
                 var band = Math.Max(64, depth * 4);
                 var stream = GenerateStream(band);
 
-                foreach (var name in new[] { nameof(SortedArrayBook), nameof(VectorizedBook), nameof(LadderBook), nameof(TreeBook) })
+                EqualiseDispatch(depth, band, stream);
+
+                foreach (var name in Implementations)
                 {
                     var mixed = MeasureMixed(name, depth, band, stream);
                     var touch = MeasureTouch(name, depth, band, stream);
@@ -233,6 +235,43 @@ namespace MarketData.Bench
 
                 return accumulator;
             }, iterations);
+        }
+
+        private static readonly string[] Implementations =
+        {
+            nameof(SortedArrayBook), nameof(VectorizedBook), nameof(LadderBook), nameof(TreeBook),
+        };
+
+        /// <summary>
+        /// Pushes every implementation through every measurement path before any of them is timed.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Without this the results are not a comparison of data structures, they are a comparison
+        /// of JIT luck. Each measurement body calls through <see cref="IOrderBook"/> from a single
+        /// shared call site. The first implementation to reach that site makes it monomorphic, so
+        /// the JIT devirtualizes and inlines the call for that type - and every implementation
+        /// measured afterwards fails the resulting type guard on every call.
+        /// </para>
+        /// <para>
+        /// The effect is not subtle. Whichever book happened to be measured first was reported
+        /// several times faster than it is, and its rivals correspondingly slower, purely from
+        /// ordering. It reversed the ranking at the shipping depth. Running every implementation
+        /// through every path first leaves each call site in the same polymorphic state for all
+        /// four, which is also the state it is in when the server holds an
+        /// <see cref="IOrderBook"/> at run time.
+        /// </para>
+        /// </remarks>
+        private static void EqualiseDispatch(int depth, int band, Operation[] stream)
+        {
+            foreach (var name in Implementations)
+            {
+                MeasureMixed(name, depth, band, stream);
+                MeasureTouch(name, depth, band, stream);
+                MeasureSnapshot(name, depth, band, stream);
+                MeasureSnapshotAllocation(name, depth, band, stream);
+                MeasureClear(name, depth, band, stream);
+            }
         }
 
         private static void Populate(IOrderBook book, Operation[] stream, int depth)
