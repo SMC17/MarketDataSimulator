@@ -4,19 +4,19 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 
 namespace MarketData.Bench
 {
     /// <summary>
-    /// Micro-benchmark of the three order book implementations across display depths.
+    /// Micro-benchmark of the four aggregated order book implementations across display depths.
     /// </summary>
     /// <remarks>
     /// Every implementation runs the identical pre-generated operation stream, so the comparison
     /// is of data structures rather than of workloads. Each configuration is timed over several
-    /// trials and reported by its minimum: the fastest observed run is the one least perturbed by
-    /// scheduling, interrupts and background work, and for a CPU-bound micro-benchmark that is a
-    /// better estimate of true cost than an average over noise.
+    /// trials. Setup is outside the timed region and the median is reported with min/max retained
+    /// in JSON.
     /// </remarks>
     public static class BookBenchmark
     {
@@ -37,7 +37,7 @@ namespace MarketData.Bench
                     outputPath = args[++i];
             }
 
-            Console.WriteLine($"Order book micro-benchmark: {Operations:N0} operations, {Trials} trials, minimum reported");
+            Console.WriteLine($"Order book micro-benchmark: {Operations:N0} operations, median of {Trials} trials");
             Console.WriteLine($"Server GC: {System.Runtime.GCSettings.IsServerGC}, 64-bit: {Environment.Is64BitProcess}");
             Console.WriteLine();
             Console.WriteLine($"{"Depth",6} {"Implementation",18} {"Mixed ns/op",13} {"Touch ns/op",13} {"Top10 ns/op",13} {"Clear ns/op",13} {"Top10 B/op",11}");
@@ -53,8 +53,12 @@ namespace MarketData.Bench
             {
                 var directory = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(outputPath));
                 System.IO.Directory.CreateDirectory(directory);
+                var report = new BookBenchmarkReport(DateTimeOffset.UtcNow,
+                    RuntimeInformation.FrameworkDescription, RuntimeInformation.OSDescription,
+                    RuntimeInformation.ProcessArchitecture.ToString(), Environment.ProcessorCount,
+                    System.Runtime.GCSettings.IsServerGC, Operations, Trials, results);
                 System.IO.File.WriteAllText(outputPath,
-                    JsonSerializer.Serialize(results, new JsonSerializerOptions { WriteIndented = true }));
+                    JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
                 Console.WriteLine($"Wrote {outputPath}");
             }
 
@@ -95,31 +99,34 @@ namespace MarketData.Bench
             return stream;
         }
 
-        private static double MeasureMixed(string name, int depth, int band, Operation[] stream)
+        private static Measurement MeasureMixed(string name, int depth, int band, Operation[] stream)
             => Measure(() =>
             {
                 var book = Create(name, depth, band);
-                var accumulator = 0;
-
-                for (var i = 0; i < stream.Length; i++)
+                return () =>
                 {
-                    var operation = stream[i];
+                    var accumulator = 0;
 
-                    if (operation.IsUpsert)
-                        accumulator += book.Upsert(operation.Side, operation.Price, operation.Quantity) ? 1 : 0;
-                    else
-                        accumulator += book.Remove(operation.Side, operation.Price) ? 1 : 0;
-                }
+                    for (var i = 0; i < stream.Length; i++)
+                    {
+                        var operation = stream[i];
 
-                return accumulator;
+                        if (operation.IsUpsert)
+                            accumulator += book.Upsert(operation.Side, operation.Price, operation.Quantity) ? 1 : 0;
+                        else
+                            accumulator += book.Remove(operation.Side, operation.Price) ? 1 : 0;
+                    }
+
+                    return accumulator;
+                };
             }, stream.Length);
 
-        private static double MeasureTouch(string name, int depth, int band, Operation[] stream)
+        private static Measurement MeasureTouch(string name, int depth, int band, Operation[] stream)
         {
             var book = Create(name, depth, band);
             Populate(book, stream, depth);
 
-            return Measure(() =>
+            return Measure(() => () =>
             {
                 var accumulator = 0;
 
@@ -133,7 +140,7 @@ namespace MarketData.Bench
             }, Operations);
         }
 
-        private static double MeasureSnapshot(string name, int depth, int band, Operation[] stream)
+        private static Measurement MeasureSnapshot(string name, int depth, int band, Operation[] stream)
         {
             var book = Create(name, depth, band);
             Populate(book, stream, depth);
@@ -143,7 +150,7 @@ namespace MarketData.Bench
             var buffer = new PriceLevel[10];
             const int iterations = Operations / 10;
 
-            return Measure(() =>
+            return Measure(() => () =>
             {
                 var accumulator = 0;
 
@@ -207,7 +214,7 @@ namespace MarketData.Bench
         /// accumulates many clears per trial rather than reporting a single one.
         /// </para>
         /// </remarks>
-        private static double MeasureClear(string name, int depth, int band, Operation[] stream)
+        private static Measurement MeasureClear(string name, int depth, int band, Operation[] stream)
         {
             var book = Create(name, depth, band);
             const int iterations = 2_000;
@@ -239,15 +246,9 @@ namespace MarketData.Bench
                 }
             }
 
-            var best = double.MaxValue;
-
-            foreach (var nanoseconds in trials)
-            {
-                if (nanoseconds < best)
-                    best = nanoseconds;
-            }
-
-            return best;
+            Array.Sort(trials);
+            return new Measurement(Math.Round(trials[Trials / 2], 2),
+                Math.Round(trials[0], 2), Math.Round(trials[^1], 2));
         }
 
         /// <summary>
@@ -301,10 +302,10 @@ namespace MarketData.Bench
                     if (results is null)
                         continue;
 
-                    Console.WriteLine($"{depth,6} {name,18} {mixed,13:F1} {touch,13:F1} {snapshot,13:F1} {clear,13:F1} {snapshotBytes,11:F1}");
+                    Console.WriteLine($"{depth,6} {name,18} {mixed.Median,13:F1} {touch.Median,13:F1} " +
+                        $"{snapshot.Median,13:F1} {clear.Median,13:F1} {snapshotBytes,11:F1}");
                     results.Add(new BookBenchmarkResult(depth, name,
-                        Math.Round(mixed, 2), Math.Round(touch, 2), Math.Round(snapshot, 2),
-                        Math.Round(clear, 2), Math.Round(snapshotBytes, 1)));
+                        mixed, touch, snapshot, clear, Math.Round(snapshotBytes, 1)));
                 }
 
                 if (results is not null)
@@ -330,30 +331,28 @@ namespace MarketData.Bench
         }
 
         /// <summary>
-        /// Times <paramref name="body"/> over several trials and returns the minimum nanoseconds
-        /// per operation. The returned accumulator is fed to <see cref="Consume"/> so the JIT
-        /// cannot delete the work being measured.
+        /// Prepares outside the timed region and records nanoseconds per operation.
         /// </summary>
-        private static double Measure(Func<int> body, int operations)
+        private static Measurement Measure(Func<Func<int>> prepare, int operations)
         {
             for (var i = 0; i < WarmupTrials; i++)
-                Consume(body());
+                Consume(prepare()());
 
-            var best = double.MaxValue;
+            var samples = new double[Trials];
 
             for (var trial = 0; trial < Trials; trial++)
             {
+                var body = prepare();
                 var start = Stopwatch.GetTimestamp();
                 Consume(body());
                 var elapsed = Stopwatch.GetTimestamp() - start;
 
-                var nanoseconds = elapsed * (1_000_000_000.0 / Stopwatch.Frequency) / operations;
-
-                if (nanoseconds < best)
-                    best = nanoseconds;
+                samples[trial] = elapsed * (1_000_000_000.0 / Stopwatch.Frequency) / operations;
             }
 
-            return best;
+            Array.Sort(samples);
+            return new Measurement(Math.Round(samples[Trials / 2], 2),
+                Math.Round(samples[0], 2), Math.Round(samples[^1], 2));
         }
 
         private static void Consume(int value)
@@ -364,8 +363,12 @@ namespace MarketData.Bench
 
         private readonly record struct Operation(bool IsUpsert, Side Side, int Price, uint Quantity);
 
-        private record BookBenchmarkResult(int Depth, string Implementation,
-            double MixedNsPerOp, double TouchNsPerOp, double SnapshotNsPerOp, double ClearNsPerOp,
-            double SnapshotBytesPerOp);
+        private sealed record Measurement(double Median, double Min, double Max);
+        private sealed record BookBenchmarkResult(int Depth, string Implementation,
+            Measurement MixedNsPerOp, Measurement TouchNsPerOp, Measurement SnapshotNsPerOp,
+            Measurement ClearNsPerOp, double SnapshotBytesPerOp);
+        private sealed record BookBenchmarkReport(DateTimeOffset TimestampUtc, string Runtime,
+            string OperatingSystem, string Architecture, int LogicalProcessors, bool ServerGc,
+            int Operations, int Trials, List<BookBenchmarkResult> Results);
     }
 }

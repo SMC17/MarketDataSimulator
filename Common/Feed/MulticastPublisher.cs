@@ -1,8 +1,10 @@
 using MarketData.Common.Books;
 using System;
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Threading;
 
 namespace MarketData.Common.Feed
@@ -35,9 +37,11 @@ namespace MarketData.Common.Feed
     public sealed class MulticastPublisher : IDisposable
     {
         public ulong Sequence => (ulong)Interlocked.Read(ref _sequence);
+        public ulong SessionId { get; }
         public long PacketsSent => Interlocked.Read(ref _packetsSent);
         public long MessagesSent => Interlocked.Read(ref _messagesSent);
         public long BytesSent => Interlocked.Read(ref _bytesSent);
+        public long SendFailures => Interlocked.Read(ref _sendFailures);
 
         /// <param name="redundantGroup">
         /// Optional second group carrying an identical copy of the feed. Real exchanges publish an
@@ -47,13 +51,18 @@ namespace MarketData.Common.Feed
         /// given packet is lost to every subscriber.
         /// </param>
         public MulticastPublisher(IPAddress group, int port, IPAddress @interface = null, int maxBatch = 64,
-            IPAddress redundantGroup = null, int redundantPort = 0)
+            IPAddress redundantGroup = null, int redundantPort = 0, ulong sessionId = 0)
         {
+            ArgumentNullException.ThrowIfNull(group);
+            if ((uint)(port - 1) >= 65535)
+                throw new ArgumentOutOfRangeException(nameof(port));
+
             _endpoint = new IPEndPoint(group, port);
             _redundantEndpoint = redundantGroup is null
                 ? null
                 : new IPEndPoint(redundantGroup, redundantPort > 0 ? redundantPort : port);
             _maxBatch = Math.Max(1, maxBatch);
+            SessionId = sessionId == 0 ? CreateSessionId() : sessionId;
 
             _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             _socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastTimeToLive, 1);
@@ -66,6 +75,19 @@ namespace MarketData.Common.Feed
                 _socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastInterface,
                     @interface.GetAddressBytes());
             }
+        }
+
+        private static ulong CreateSessionId()
+        {
+            Span<byte> bytes = stackalloc byte[sizeof(ulong)];
+
+            do
+            {
+                RandomNumberGenerator.Fill(bytes);
+            }
+            while (BinaryPrimitives.ReadUInt64LittleEndian(bytes) == 0);
+
+            return BinaryPrimitives.ReadUInt64LittleEndian(bytes);
         }
 
         /// <summary>Appends an incremental to the current packet, flushing first if it will not fit.</summary>
@@ -108,35 +130,37 @@ namespace MarketData.Common.Feed
 
             // Stamped at the moment of transmission rather than of generation, because everything
             // before this point is measured separately and a subscriber can only observe from here.
-            FeedProtocol.WriteHeader(_buffer, (ushort)_pending, (ulong)_sequence, Stopwatch.GetTimestamp());
+            FeedProtocol.WriteHeader(_buffer.AsSpan(0, _offset), (ushort)_pending, SessionId,
+                (ulong)_sequence, Stopwatch.GetTimestamp());
 
+            var successfulSends = TrySend(_endpoint) ? 1 : 0;
+
+            if (_redundantEndpoint is not null && TrySend(_redundantEndpoint))
+                successfulSends++;
+
+            // Sequence advances even when every send fails so downstream loss is detectable.
+            Interlocked.Add(ref _sequence, _pending);
+            Interlocked.Add(ref _packetsSent, successfulSends);
+            Interlocked.Add(ref _bytesSent, (long)_offset * successfulSends);
+
+            if (successfulSends > 0)
+                Interlocked.Add(ref _messagesSent, _pending);
+
+            _pending = 0;
+            _offset = FeedProtocol.HeaderSize;
+        }
+
+        private bool TrySend(EndPoint endpoint)
+        {
             try
             {
-                _socket.SendTo(_buffer, 0, _offset, SocketFlags.None, _endpoint);
-
-                if (_redundantEndpoint is not null)
-                {
-                    // Byte-identical, same sequence numbers: the subscriber's duplicate suppression
-                    // is what turns two copies back into one stream.
-                    _socket.SendTo(_buffer, 0, _offset, SocketFlags.None, _redundantEndpoint);
-                    Interlocked.Increment(ref _packetsSent);
-                }
-
-                Interlocked.Add(ref _sequence, _pending);
-                Interlocked.Increment(ref _packetsSent);
-                Interlocked.Add(ref _messagesSent, _pending);
-                Interlocked.Add(ref _bytesSent, _offset);
+                _socket.SendTo(_buffer, 0, _offset, SocketFlags.None, endpoint);
+                return true;
             }
             catch (SocketException)
             {
-                // A send failure is indistinguishable from a drop in flight to any subscriber, and
-                // the sequence still advances so the loss is detectable downstream.
-                Interlocked.Add(ref _sequence, _pending);
-            }
-            finally
-            {
-                _pending = 0;
-                _offset = FeedProtocol.HeaderSize;
+                Interlocked.Increment(ref _sendFailures);
+                return false;
             }
         }
 
@@ -161,5 +185,6 @@ namespace MarketData.Common.Feed
         private long _packetsSent;
         private long _messagesSent;
         private long _bytesSent;
+        private long _sendFailures;
     }
 }

@@ -22,8 +22,8 @@ fetch() { # repo-path, filename
   curl -sSfL --max-time 900 -o "$DEST/$f" "$url/$f"
 }
 
-LOBSIM="https://media.githubusercontent.com/media/kpetridis24/lobsim/master/sample_data"
-MMVIARL="https://media.githubusercontent.com/media/asarfa/MMviaRL/main/data"
+LOBSIM="https://media.githubusercontent.com/media/kpetridis24/lobsim/0cb48ed89a9cd5568e974d988214cfbebf51ca51/sample_data"
+MMVIARL="https://media.githubusercontent.com/media/asarfa/MMviaRL/92b0ef0debe4641b2813db6d6b48034f819c97ed/data"
 
 fetch "$LOBSIM"  "AMZN_2012-06-21_34200000_57600000_message_10.csv"
 fetch "$LOBSIM"  "AMZN_2012-06-21_34200000_57600000_orderbook_10.csv"

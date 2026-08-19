@@ -7,7 +7,7 @@ namespace MarketData.Common.Books
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Asymptotically the worst of the three - O(log d) to locate a price, then O(d) to shift the
+    /// O(log d) to locate a price, then O(d) to shift the
     /// tail on insert or remove - and in practice the fastest at realistic display depths.
     /// </para>
     /// <para>

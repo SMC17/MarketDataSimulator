@@ -48,12 +48,14 @@ PY
 cat > "$WORK/multicast.json" <<JSON
 { "Port": 14312, "VerboseLogging": false, "StatisticsIntervalSeconds": 0, "RunForSeconds": 40,
   "Multicast": { "Enabled": true, "Group": "239.7.7.9", "Port": 31009, "Interface": "127.0.0.1",
+                 "RedundantGroup": "239.7.7.10", "RedundantPort": 31010,
                  "MaxBatch": 1, "FlushIntervalMs": 0, "SnapshotIntervalSeconds": 1.0 },
   "Instruments": [ { "Id": 1, "Symbol": "SMOKE",
     "Specifications": { "Depth": 10, "UpdatesPerSecond": 200, "SnapshotProbability": 0.05 } } ] }
 JSON
 server "$WORK/multicast.json"
 ( cd Bench/bin/Release/net8.0 && dotnet Bench.dll multicast --group 239.7.7.9 --port 31009 \
+    --redundant-group 239.7.7.10 --redundant-port 31010 \
     --subscribers 5 --warmup 2 --duration 4 --out "$WORK/multicast.json.out" )
 stop
 
@@ -62,7 +64,9 @@ import json, sys
 r = json.load(open(sys.argv[1]))
 assert r["MessagesReceived"] > 0, "multicast subscribers received nothing"
 assert r["Malformed"] == 0, r
+assert r["LineDivergences"] == 0, r
 assert r["StaleSubscribers"] == 0, r
+assert r["Duplicates"] > 0, "redundant line produced no duplicate packets"
 print(f"multicast OK: {r['MessagesReceived']} msgs, mean {r['MeanMs']} ms, "
       f"{r['Gaps']} gaps, {r['StaleSubscribers']} stale")
 PY

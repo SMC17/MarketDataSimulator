@@ -1,0 +1,171 @@
+{
+  "TimestampUtc": "2026-08-19T17:08:58.4094078+00:00",
+  "Runtime": ".NET 8.0.30",
+  "OperatingSystem": "Ubuntu 24.04.3 LTS",
+  "Architecture": "X64",
+  "LogicalProcessors": 8,
+  "ServerGc": true,
+  "Trials": 5,
+  "SeedAfterMessages": 1,
+  "Session": "MSFT sample level 5",
+  "Symbol": "MSFT",
+  "Levels": 5,
+  "Transitions": [
+    {
+      "Implementation": "SortedArray",
+      "MessagesApplied": 19999,
+      "RowsCompared": 19999,
+      "RowsMatched": 19999,
+      "MatchRate": 1,
+      "MessagesPerSecond": 1089271,
+      "MinMessagesPerSecond": 941305,
+      "MaxMessagesPerSecond": 1237858,
+      "Unverifiable": 0,
+      "FirstMismatchRow": -1,
+      "FirstMismatchDetail": null,
+      "NegativeLevels": 0,
+      "HiddenExecutions": 190
+    },
+    {
+      "Implementation": "Vectorized",
+      "MessagesApplied": 19999,
+      "RowsCompared": 19999,
+      "RowsMatched": 19999,
+      "MatchRate": 1,
+      "MessagesPerSecond": 1326013,
+      "MinMessagesPerSecond": 836343,
+      "MaxMessagesPerSecond": 1360765,
+      "Unverifiable": 0,
+      "FirstMismatchRow": -1,
+      "FirstMismatchDetail": null,
+      "NegativeLevels": 0,
+      "HiddenExecutions": 190
+    },
+    {
+      "Implementation": "Ladder",
+      "MessagesApplied": 19999,
+      "RowsCompared": 19999,
+      "RowsMatched": 19999,
+      "MatchRate": 1,
+      "MessagesPerSecond": 581543,
+      "MinMessagesPerSecond": 466079,
+      "MaxMessagesPerSecond": 588747,
+      "Unverifiable": 0,
+      "FirstMismatchRow": -1,
+      "FirstMismatchDetail": null,
+      "NegativeLevels": 0,
+      "HiddenExecutions": 190
+    },
+    {
+      "Implementation": "Tree",
+      "MessagesApplied": 19999,
+      "RowsCompared": 19999,
+      "RowsMatched": 19999,
+      "MatchRate": 1,
+      "MessagesPerSecond": 343020,
+      "MinMessagesPerSecond": 263339,
+      "MaxMessagesPerSecond": 364595,
+      "Unverifiable": 0,
+      "FirstMismatchRow": -1,
+      "FirstMismatchDetail": null,
+      "NegativeLevels": 0,
+      "HiddenExecutions": 190
+    }
+  ],
+  "Cumulative": [
+    {
+      "Implementation": "SortedArray",
+      "MessagesApplied": 20000,
+      "RowsCompared": 19999,
+      "RowsMatched": 33,
+      "MatchRate": 0.00165,
+      "MessagesPerSecond": 1551094,
+      "MinMessagesPerSecond": 1497436,
+      "MaxMessagesPerSecond": 1590040,
+      "Unverifiable": 0,
+      "FirstMismatchRow": 35,
+      "FirstMismatchDetail": "row 35 after 34200.317289601 VisibleExecution #16167006 100@309700 dir -1: ask level 5: expected 300@310200, got 100@310200",
+      "NegativeLevels": 233,
+      "HiddenExecutions": 190
+    },
+    {
+      "Implementation": "Vectorized",
+      "MessagesApplied": 20000,
+      "RowsCompared": 19999,
+      "RowsMatched": 33,
+      "MatchRate": 0.00165,
+      "MessagesPerSecond": 1520845,
+      "MinMessagesPerSecond": 1200955,
+      "MaxMessagesPerSecond": 1547443,
+      "Unverifiable": 0,
+      "FirstMismatchRow": 35,
+      "FirstMismatchDetail": "row 35 after 34200.317289601 VisibleExecution #16167006 100@309700 dir -1: ask level 5: expected 300@310200, got 100@310200",
+      "NegativeLevels": 233,
+      "HiddenExecutions": 190
+    },
+    {
+      "Implementation": "Ladder",
+      "MessagesApplied": 20000,
+      "RowsCompared": 19999,
+      "RowsMatched": 33,
+      "MatchRate": 0.00165,
+      "MessagesPerSecond": 1363090,
+      "MinMessagesPerSecond": 1326724,
+      "MaxMessagesPerSecond": 1373239,
+      "Unverifiable": 0,
+      "FirstMismatchRow": 35,
+      "FirstMismatchDetail": "row 35 after 34200.317289601 VisibleExecution #16167006 100@309700 dir -1: ask level 5: expected 300@310200, got 100@310200",
+      "NegativeLevels": 233,
+      "HiddenExecutions": 190
+    },
+    {
+      "Implementation": "Tree",
+      "MessagesApplied": 20000,
+      "RowsCompared": 19999,
+      "RowsMatched": 33,
+      "MatchRate": 0.00165,
+      "MessagesPerSecond": 924280,
+      "MinMessagesPerSecond": 630519,
+      "MaxMessagesPerSecond": 1166360,
+      "Unverifiable": 0,
+      "FirstMismatchRow": 35,
+      "FirstMismatchDetail": "row 35 after 34200.317289601 VisibleExecution #16167006 100@309700 dir -1: ask level 5: expected 300@310200, got 100@310200",
+      "NegativeLevels": 233,
+      "HiddenExecutions": 190
+    }
+  ],
+  "CumulativeAccuracyByDepth": [
+    {
+      "Levels": 1,
+      "RowsExact": 1820,
+      "Share": 0.091005
+    },
+    {
+      "Levels": 2,
+      "RowsExact": 836,
+      "Share": 0.041802
+    },
+    {
+      "Levels": 3,
+      "RowsExact": 249,
+      "Share": 0.012451
+    },
+    {
+      "Levels": 4,
+      "RowsExact": 68,
+      "Share": 0.0034
+    },
+    {
+      "Levels": 5,
+      "RowsExact": 33,
+      "Share": 0.00165
+    }
+  ],
+  "Parser": {
+    "MessagesPerSecond": 10943565,
+    "MinMessagesPerSecond": 10516298,
+    "MaxMessagesPerSecond": 11164702,
+    "MebibytesPerSecond": 421.1,
+    "BytesPerMessage": 0
+  }
+}

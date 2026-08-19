@@ -13,29 +13,61 @@ namespace MarketData.Tests
         [Fact]
         public void HeaderRoundTrips()
         {
-            var buffer = new byte[FeedProtocol.MaxPacketSize];
-            FeedProtocol.WriteHeader(buffer, 7, 123456789012345UL, -98765L);
+            var buffer = new byte[FeedProtocol.HeaderSize + 1];
+            buffer[FeedProtocol.HeaderSize] = (byte)FeedMessageType.Heartbeat;
+            FeedProtocol.WriteHeader(buffer, 1, 99, 123456789012345UL, -98765L);
 
-            Assert.True(FeedProtocol.TryReadHeader(buffer, out var count, out var sequence, out var timestamp));
-            Assert.Equal(7, count);
-            Assert.Equal(123456789012345UL, sequence);
-            Assert.Equal(-98765L, timestamp);
+            Assert.True(FeedProtocol.TryReadHeader(buffer, out var header, out var error));
+            Assert.Equal(FeedProtocolError.None, error);
+            Assert.Equal(1, header.MessageCount);
+            Assert.Equal(buffer.Length, header.PacketLength);
+            Assert.Equal(99UL, header.SessionId);
+            Assert.Equal(123456789012345UL, header.FirstSequence);
+            Assert.Equal(-98765L, header.SourceTimestamp);
         }
 
         [Fact]
         public void HeaderRejectsForeignBytes()
         {
-            var buffer = new byte[FeedProtocol.MaxPacketSize];
-            FeedProtocol.WriteHeader(buffer, 1, 1, 1);
+            var buffer = new byte[FeedProtocol.HeaderSize + 1];
+            buffer[FeedProtocol.HeaderSize] = (byte)FeedMessageType.Heartbeat;
+            FeedProtocol.WriteHeader(buffer, 1, 1, 1, 1);
 
             buffer[0] = 0xFF; // wrong magic
-            Assert.False(FeedProtocol.TryReadHeader(buffer, out _, out _, out _));
+            Assert.False(FeedProtocol.TryReadHeader(buffer, out _, out var error));
+            Assert.Equal(FeedProtocolError.Magic, error);
 
             buffer[0] = FeedProtocol.Magic;
             buffer[1] = 99; // wrong version
-            Assert.False(FeedProtocol.TryReadHeader(buffer, out _, out _, out _));
+            Assert.False(FeedProtocol.TryReadHeader(buffer, out _, out error));
+            Assert.Equal(FeedProtocolError.Version, error);
 
-            Assert.False(FeedProtocol.TryReadHeader(new byte[3], out _, out _, out _));
+            Assert.False(FeedProtocol.TryReadHeader(new byte[3], out _, out error));
+            Assert.Equal(FeedProtocolError.Truncated, error);
+        }
+
+        [Fact]
+        public void Crc32CKnownVectorMatchesTheStandard()
+        {
+            Assert.Equal(0xE3069283u, Crc32C.Compute("123456789"u8));
+            Assert.Equal(0xE3069283u, Crc32C.Compute("1234"u8, "56789"u8));
+        }
+
+        [Fact]
+        public void HeaderRejectsPayloadCorruptionAndTrailingBytes()
+        {
+            var packet = new byte[FeedProtocol.HeaderSize + FeedProtocol.IncrementalSize];
+            FeedProtocol.WriteIncremental(packet.AsSpan(FeedProtocol.HeaderSize), FeedMessageType.Add,
+                1, Side.Bid, new PriceLevel(-1, 100));
+            FeedProtocol.WriteHeader(packet, 1, 7, 0, 1234);
+
+            packet[^1] ^= 1;
+            Assert.False(FeedProtocol.TryReadHeader(packet, out _, out var error));
+            Assert.Equal(FeedProtocolError.Checksum, error);
+
+            Array.Resize(ref packet, packet.Length + 1);
+            Assert.False(FeedProtocol.TryReadHeader(packet, out _, out error));
+            Assert.Equal(FeedProtocolError.PacketLength, error);
         }
 
         [Fact]
@@ -132,6 +164,15 @@ namespace MarketData.Tests
             Assert.True(offset <= FeedProtocol.MaxPacketSize);
             Assert.True(FeedProtocol.MaxPacketSize <= 1472, "must fit a 1500-byte MTU with IP and UDP headers");
             Assert.True(messages > 90, $"expected a useful batch size, got {messages}");
+        }
+
+        [Fact]
+        public void SnapshotCannotExceedOneDatagram()
+        {
+            var bids = new PriceLevel[FeedProtocol.MaxSnapshotLevels];
+            var asks = new PriceLevel[1];
+
+            Assert.Throws<ArgumentOutOfRangeException>(() => FeedProtocol.SnapshotSize(bids.Length, asks.Length));
         }
     }
 }

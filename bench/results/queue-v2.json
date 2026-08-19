@@ -1,0 +1,53 @@
+{
+  "TimestampUtc": "2026-08-19T17:08:46.5565109+00:00",
+  "Runtime": ".NET 8.0.30",
+  "OperatingSystem": "Ubuntu 24.04.3 LTS",
+  "Architecture": "X64",
+  "LogicalProcessors": 8,
+  "ServerGc": true,
+  "Items": 1000000,
+  "Capacity": 8192,
+  "Trials": 7,
+  "Results": [
+    {
+      "Name": "RingBuffer (single thread)",
+      "MedianSeconds": 0.003496,
+      "MedianNanosecondsPerItem": 3.5,
+      "MinNanosecondsPerItem": 3.46,
+      "MaxNanosecondsPerItem": 4.14,
+      "BytesPerItem": 0.0659
+    },
+    {
+      "Name": "Channel (single thread)",
+      "MedianSeconds": 0.069494,
+      "MedianNanosecondsPerItem": 69.49,
+      "MinNanosecondsPerItem": 61.75,
+      "MaxNanosecondsPerItem": 109.73,
+      "BytesPerItem": 0.0009
+    },
+    {
+      "Name": "RingBuffer (producer \u002B consumer)",
+      "MedianSeconds": 0.014327,
+      "MedianNanosecondsPerItem": 14.33,
+      "MinNanosecondsPerItem": 11.3,
+      "MaxNanosecondsPerItem": 27.24,
+      "BytesPerItem": 0.0663
+    },
+    {
+      "Name": "RingBuffer batched (prod \u002B cons)",
+      "MedianSeconds": 0.006311,
+      "MedianNanosecondsPerItem": 6.31,
+      "MinNanosecondsPerItem": 5.75,
+      "MaxNanosecondsPerItem": 7.15,
+      "BytesPerItem": 0.0663
+    },
+    {
+      "Name": "Channel (producer \u002B consumer)",
+      "MedianSeconds": 0.163767,
+      "MedianNanosecondsPerItem": 163.77,
+      "MinNanosecondsPerItem": 100.33,
+      "MaxNanosecondsPerItem": 273.87,
+      "BytesPerItem": 0.1326
+    }
+  ]
+}

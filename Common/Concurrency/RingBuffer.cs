@@ -51,6 +51,7 @@ namespace MarketData.Common.Concurrency
     /// </remarks>
     public sealed class RingBuffer<T>
     {
+        public const int MaxCapacity = 1 << 30;
         public int Capacity { get; }
 
         /// <summary>Items written since construction.</summary>
@@ -100,17 +101,11 @@ namespace MarketData.Common.Concurrency
 
         public RingBuffer(int capacity)
         {
-            if (capacity <= 0)
-                throw new ArgumentOutOfRangeException(nameof(capacity), capacity, "Capacity must be positive.");
-
-            // The mask indexing requires a power of two, and the largest one an int can hold is
-            // 2^30. Beyond that the round-up overflows to zero and spins forever instead of
-            // failing, so reject it here where the caller can see why.
-            if (capacity > MaxCapacity)
+            if (capacity is <= 0 or > MaxCapacity)
                 throw new ArgumentOutOfRangeException(nameof(capacity), capacity,
-                    $"Capacity must not exceed {MaxCapacity}, the largest power of two an int can represent.");
+                    $"Capacity must be in [1, {MaxCapacity}], the largest representable power of two.");
 
-            Capacity = RoundUpToPowerOfTwo(capacity);
+            Capacity = (int)BitOperations.RoundUpToPowerOf2((uint)capacity);
             _mask = Capacity - 1;
             _slots = new T[Capacity];
         }
@@ -225,11 +220,6 @@ namespace MarketData.Common.Concurrency
 
             Volatile.Write(ref _read.Value, read + count);
         }
-
-        /// <summary>Largest power of two representable in an <see cref="int"/>.</summary>
-        public const int MaxCapacity = 1 << 30;
-
-        private static int RoundUpToPowerOfTwo(int value) => (int)BitOperations.RoundUpToPowerOf2((uint)value);
 
         private readonly T[] _slots;
         private readonly int _mask;

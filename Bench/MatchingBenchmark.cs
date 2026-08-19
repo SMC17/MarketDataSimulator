@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 
 namespace MarketData.Bench
@@ -13,11 +14,9 @@ namespace MarketData.Bench
     /// Micro-benchmark of the matching engine, measured against the size of the resting book.
     /// </summary>
     /// <remarks>
-    /// The point of the sweep across book sizes is to make the complexity claims falsifiable. An
-    /// O(1) cancel should cost the same with a hundred resting orders as with a hundred thousand;
-    /// if the measured cost climbs with book size, the claim is wrong regardless of what the code
-    /// looks like. Real venues receive far more cancels than anything else, so that column is the
-    /// one that decides whether the structure was worth building.
+    /// The sweep makes complexity claims falsifiable. Each timed iteration is a state-preserving
+    /// two-command cycle, so the resting population is the named independent variable rather than
+    /// silently growing between trials.
     /// </remarks>
     public static class MatchingBenchmark
     {
@@ -39,11 +38,11 @@ namespace MarketData.Bench
                     outputPath = args[++i];
             }
 
-            Console.WriteLine($"Matching engine micro-benchmark: {Operations:N0} operations, {Trials} trials, minimum reported");
+            Console.WriteLine($"Matching engine micro-benchmark: {Operations:N0} cycles, median of {Trials} trials");
             Console.WriteLine($"Price band +/-{PriceBand}, server GC: {System.Runtime.GCSettings.IsServerGC}");
             Console.WriteLine();
-            Console.WriteLine($"{"Resting orders",15} {"Add ns/op",11} {"Cancel ns/op",13} {"Match ns/op",12} {"Mixed ns/op",12} {"Mixed B/op",11}");
-            Console.WriteLine(new string('-', 80));
+            Console.WriteLine($"{"Resting orders",15} {"add+cancel",12} {"cancel+add",13} {"match+repl",12}");
+            Console.WriteLine(new string('-', 57));
 
             var results = new List<MatchingResult>();
 
@@ -51,13 +50,15 @@ namespace MarketData.Bench
             Sweep(sizes, null);
             Sweep(sizes, results);
 
-            Console.WriteLine();
-            Console.WriteLine("Mixed = 60% add, 35% cancel, 5% aggressive, approximating a real venue's message mix.");
-
             if (outputPath is not null)
             {
                 System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(outputPath)));
-                System.IO.File.WriteAllText(outputPath, JsonSerializer.Serialize(results, new JsonSerializerOptions { WriteIndented = true }));
+                var report = new MatchingReport(DateTimeOffset.UtcNow,
+                    RuntimeInformation.FrameworkDescription, RuntimeInformation.OSDescription,
+                    RuntimeInformation.ProcessArchitecture.ToString(), Environment.ProcessorCount,
+                    System.Runtime.GCSettings.IsServerGC, Operations, Trials, PriceBand, results);
+                System.IO.File.WriteAllText(outputPath, JsonSerializer.Serialize(report,
+                    new JsonSerializerOptions { WriteIndented = true }));
                 Console.WriteLine($"Wrote {outputPath}");
             }
 
@@ -105,19 +106,15 @@ namespace MarketData.Bench
                 var add = MeasureAdd(size);
                 var cancel = MeasureCancel(size);
                 var match = MeasureMatch(size);
-                var mixed = MeasureMixed(size);
-                var bytes = MeasureMixedAllocation(size);
-
                 if (results is null)
                     continue;
 
-                Console.WriteLine($"{size,15:N0} {add,11:F1} {cancel,13:F1} {match,12:F1} {mixed,12:F1} {bytes,11:F1}");
-                results.Add(new MatchingResult(size, Math.Round(add, 2), Math.Round(cancel, 2),
-                    Math.Round(match, 2), Math.Round(mixed, 2), Math.Round(bytes, 1)));
+                Console.WriteLine($"{size,15:N0} {add.Median,12:F1} {cancel.Median,13:F1} {match.Median,12:F1}");
+                results.Add(new MatchingResult(size, add, cancel, match));
             }
         }
 
-        private static double MeasureAdd(int size)
+        private static Measurement MeasureAdd(int size)
         {
             var random = new Random(7);
             var ids = new List<ulong>();
@@ -152,15 +149,13 @@ namespace MarketData.Bench
         }
 
         /// <summary>
-        /// Cancel cost as a function of book size, with price-level churn held out.
+        /// Cancel-plus-replacement cost as a function of book size, with price-level churn held out.
         /// </summary>
         /// <remarks>
-        /// Every order is placed on one of a small fixed set of price levels, so a cancel never
-        /// empties a level and never creates one. What remains is exactly the O(1) claim: one hash
-        /// lookup to find the order, and one unlink from its queue. If this column climbs with
-        /// book size, the cost is coming from somewhere other than the algorithm.
+        /// Every order is placed on one of a small fixed set of price levels, so the cycle measures
+        /// hash lookup, intrusive unlink, and replacement without price-level creation/removal.
         /// </remarks>
-        private static double MeasureCancel(int size)
+        private static Measurement MeasureCancel(int size)
         {
             const int levels = 64;
 
@@ -179,11 +174,6 @@ namespace MarketData.Bench
                 ids.Add(id);
             }
 
-            var victims = new ulong[Operations];
-
-            for (var i = 0; i < Operations; i++)
-                victims[i] = ids[random.Next(ids.Count)];
-
             var sides = new Side[Operations];
             var prices = new int[Operations];
 
@@ -201,9 +191,13 @@ namespace MarketData.Bench
                 {
                     // Cancel one, add one: book size is held exactly constant, so the only variable
                     // across rows of the table is how many orders are resting.
-                    book.Cancel(victims[i], null);
+                    var victimIndex = i % ids.Count;
+
+                    if (!book.Cancel(ids[victimIndex], null))
+                        throw new InvalidOperationException("benchmark lost a live order id");
+
                     book.Submit(id, sides[i], OrderType.Limit, TimeInForce.GoodTilCancel, prices[i], 100, null);
-                    victims[i] = id++;
+                    ids[victimIndex] = id++;
                 }
 
                 nextId = id;
@@ -211,11 +205,18 @@ namespace MarketData.Bench
             }, Operations);
         }
 
-        private static double MeasureMatch(int size)
+        private static Measurement MeasureMatch(int size)
         {
-            var random = new Random(13);
-            var ids = new List<ulong>();
-            var book = Populate(size, random, ids, out var nextId);
+            var book = new LimitOrderBook(-PriceBand, PriceBand);
+            ulong nextId = 1;
+
+            for (var i = 0; i < size; i++)
+            {
+                var side = (i & 1) == 0 ? Side.Bid : Side.Ask;
+                book.Submit(nextId++, side, OrderType.Limit, TimeInForce.GoodTilCancel,
+                    side == Side.Bid ? -1 : 1, 50, null);
+            }
+
             var events = new List<MarketEvent>(64);
 
             return Measure(() =>
@@ -226,130 +227,30 @@ namespace MarketData.Bench
                 {
                     events.Clear();
 
-                    // Aggress at the touch, then replenish the other side so the book does not
-                    // drain away over the run.
+                    // Every resting order is exactly the market order size. One order leaves and
+                    // one returns at the same price, preserving count, quantity, and touch.
                     var side = (i & 1) == 0 ? Side.Bid : Side.Ask;
                     book.Submit(id++, side, OrderType.Market, TimeInForce.ImmediateOrCancel, 0, 50, events);
 
                     var opposite = side == Side.Bid ? Side.Ask : Side.Bid;
-                    var price = opposite == Side.Bid ? -random.Next(1, 50) : random.Next(1, 50);
-                    book.Submit(id++, opposite, OrderType.Limit, TimeInForce.GoodTilCancel, price, 50, null);
+                    book.Submit(id++, opposite, OrderType.Limit, TimeInForce.GoodTilCancel,
+                        opposite == Side.Bid ? -1 : 1, 50, null);
                 }
 
-                nextId = id;
-                return events.Count;
-            }, Operations);
-        }
-
-        private static double MeasureMixed(int size)
-        {
-            var random = new Random(17);
-            var ids = new List<ulong>();
-            var book = Populate(size, random, ids, out var nextId);
-            var script = BuildMixedScript(random);
-            var events = new List<MarketEvent>(64);
-
-            return Measure(() =>
-            {
-                var id = nextId;
-                var resting = new Queue<ulong>(ids);
-
-                for (var i = 0; i < script.Length; i++)
-                {
-                    var step = script[i];
-
-                    switch (step.Kind)
-                    {
-                        case 0:
-                            book.Submit(id, step.Side, OrderType.Limit, TimeInForce.GoodTilCancel, step.Price, 100, null);
-                            resting.Enqueue(id++);
-                            break;
-                        case 1:
-                            if (resting.Count > 0)
-                                book.Cancel(resting.Dequeue(), null);
-                            break;
-                        default:
-                            events.Clear();
-                            book.Submit(id++, step.Side, OrderType.Market, TimeInForce.ImmediateOrCancel, 0, 50, events);
-                            break;
-                    }
-                }
+                if (book.OrderCount != size)
+                    throw new InvalidOperationException("match cycle changed the resting population");
 
                 nextId = id;
                 return book.OrderCount;
-            }, script.Length);
+            }, Operations);
         }
 
-        private static double MeasureMixedAllocation(int size)
-        {
-            var random = new Random(19);
-            var ids = new List<ulong>();
-            var book = Populate(size, random, ids, out var nextId);
-            var script = BuildMixedScript(random);
-            var events = new List<MarketEvent>(64);
-            var resting = new Queue<ulong>(ids);
-            var id = nextId;
-
-            // Warm up so lazy growth of the id map and level pool is not charged per operation.
-            for (var i = 0; i < 20_000 && i < script.Length; i++)
-                Apply(book, script[i], ref id, resting, events);
-
-            var before = GC.GetAllocatedBytesForCurrentThread();
-            var counted = 0;
-
-            for (var i = 20_000; i < script.Length; i++)
-            {
-                Apply(book, script[i], ref id, resting, events);
-                counted++;
-            }
-
-            return counted == 0 ? 0 : (GC.GetAllocatedBytesForCurrentThread() - before) / (double)counted;
-        }
-
-        private static void Apply(LimitOrderBook book, Step step, ref ulong id, Queue<ulong> resting, List<MarketEvent> events)
-        {
-            switch (step.Kind)
-            {
-                case 0:
-                    book.Submit(id, step.Side, OrderType.Limit, TimeInForce.GoodTilCancel, step.Price, 100, null);
-                    resting.Enqueue(id++);
-                    break;
-                case 1:
-                    if (resting.Count > 0)
-                        book.Cancel(resting.Dequeue(), null);
-                    break;
-                default:
-                    events.Clear();
-                    book.Submit(id++, step.Side, OrderType.Market, TimeInForce.ImmediateOrCancel, 0, 50, events);
-                    break;
-            }
-        }
-
-        private readonly record struct Step(byte Kind, Side Side, int Price);
-
-        /// <summary>60% add, 35% cancel, 5% aggressive - roughly a real venue's message mix.</summary>
-        private static Step[] BuildMixedScript(Random random)
-        {
-            var script = new Step[Operations];
-
-            for (var i = 0; i < Operations; i++)
-            {
-                var side = random.Next(2) == 0 ? Side.Bid : Side.Ask;
-                var price = side == Side.Bid ? -random.Next(1, PriceBand) : random.Next(1, PriceBand);
-                var roll = random.NextDouble();
-                var kind = roll < 0.60 ? (byte)0 : roll < 0.95 ? (byte)1 : (byte)2;
-                script[i] = new Step(kind, side, price);
-            }
-
-            return script;
-        }
-
-        private static double Measure(Func<int> body, int operations)
+        private static Measurement Measure(Func<int> body, int operations)
         {
             for (var i = 0; i < WarmupTrials; i++)
                 Consume(body());
 
-            var best = double.MaxValue;
+            var samples = new double[Trials];
 
             for (var trial = 0; trial < Trials; trial++)
             {
@@ -357,13 +258,12 @@ namespace MarketData.Bench
                 Consume(body());
                 var elapsed = Stopwatch.GetTimestamp() - start;
 
-                var nanoseconds = elapsed * (1_000_000_000.0 / Stopwatch.Frequency) / operations;
-
-                if (nanoseconds < best)
-                    best = nanoseconds;
+                samples[trial] = elapsed * (1_000_000_000.0 / Stopwatch.Frequency) / operations;
             }
 
-            return best;
+            Array.Sort(samples);
+            return new Measurement(Math.Round(samples[Trials / 2], 2),
+                Math.Round(samples[0], 2), Math.Round(samples[^1], 2));
         }
 
         private static void Consume(int value)
@@ -372,7 +272,12 @@ namespace MarketData.Bench
                 throw new InvalidOperationException("unreachable; defeats dead-code elimination");
         }
 
-        private record MatchingResult(int RestingOrders, double AddNsPerOp, double CancelNsPerOp,
-            double MatchNsPerOp, double MixedNsPerOp, double MixedBytesPerOp);
+        private sealed record Measurement(double Median, double Min, double Max);
+        private sealed record MatchingResult(int RestingOrders, Measurement AddCancelCycleNs,
+            Measurement CancelAddCycleNs, Measurement MatchReplenishCycleNs);
+
+        private sealed record MatchingReport(DateTimeOffset TimestampUtc, string Runtime,
+            string OperatingSystem, string Architecture, int LogicalProcessors, bool ServerGc,
+            int CyclesPerTrial, int Trials, int PriceBand, List<MatchingResult> Results);
     }
 }

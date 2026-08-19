@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 
 namespace MarketData.Bench
@@ -18,8 +19,8 @@ namespace MarketData.Bench
         public static int Run(string[] args)
         {
             var directory = "data/lobster";
-            var warmup = 0;
-            var trials = 3;
+            var warmup = 1;
+            var trials = 5;
             string outputPath = null;
 
             for (var i = 0; i < args.Length; i++)
@@ -32,6 +33,9 @@ namespace MarketData.Bench
                     case "--out": outputPath = args[++i]; break;
                 }
             }
+
+            if (warmup < 0 || trials < 3)
+                throw new ArgumentOutOfRangeException(nameof(args), "warmup must be non-negative and trials at least three");
 
             var sessions = LobsterSessions.Discover(directory);
 
@@ -46,14 +50,14 @@ namespace MarketData.Bench
 
             foreach (var session in sessions)
             {
-                if (!RunSession(session, warmup, trials, outputPath, ref allExact))
+                if (!RunSession(session, warmup, trials, outputPath))
                     allExact = false;
             }
 
             return allExact ? 0 : 1;
         }
 
-        private static bool RunSession(LobsterSession session, int warmup, int trials, string outputPath, ref bool allExact)
+        private static bool RunSession(LobsterSession session, int warmup, int trials, string outputPath)
         {
             var messagePath = session.MessagePath;
             var referencePath = session.ReferencePath;
@@ -62,8 +66,8 @@ namespace MarketData.Bench
             Console.WriteLine(new string('=', 92));
             Console.WriteLine($"{session}");
             Console.WriteLine(new string('=', 92));
-            var messages = File.ReadAllBytes(messagePath);
-            var reference = File.ReadAllBytes(referencePath);
+            var messages = LobsterSessions.ReadAllBytes(messagePath);
+            var reference = LobsterSessions.ReadAllBytes(referencePath);
 
             var (minPrice, maxPrice, count) = Survey(messages);
             var levels = LobsterReplay.DetectLevels(reference);
@@ -72,14 +76,14 @@ namespace MarketData.Bench
             maxPrice = Math.Max(maxPrice, referenceMax);
             Console.WriteLine($"Messages : {count:N0}   price band [{minPrice:N0}, {maxPrice:N0}] " +
                               $"({(maxPrice - minPrice) / 10000.0:F2} dollars)");
-            Console.WriteLine($"Warm-up  : {warmup:N0} messages before comparison begins");
+            Console.WriteLine($"Seed after: {Math.Max(1, warmup):N0} message(s); throughput is median of {trials} trials");
             Console.WriteLine($"Depth    : {levels} levels published per side");
             Console.WriteLine();
 
             // Padded so a level can never fall outside the ladder's band.
             var band = 10_000;
             var results = new List<ReplayReport>();
-            var bestByImplementation = new List<ReplayResult>();
+            var representativeByImplementation = new List<ReplayResult>();
 
             Console.WriteLine("SINGLE-STEP TRANSITIONS - seed from the exchange's published book, apply one");
             Console.WriteLine("message, compare against the exchange's next published book.");
@@ -91,7 +95,11 @@ namespace MarketData.Bench
 
             foreach (var name in new[] { "SortedArray", "Vectorized", "Ladder", "Tree" })
             {
-                ReplayResult best = null;
+                var trialResults = new List<ReplayResult>(trials);
+                var warmBook = name == "Ladder"
+                    ? new LadderBook(4096, minPrice - 10_000, maxPrice + 10_000)
+                    : BookFactory.Create(name, 4096, maxPrice + 10_000);
+                LobsterReplay.ReplayTransitions(messages, reference, warmBook);
 
                 for (var trial = 0; trial < trials; trial++)
                 {
@@ -99,18 +107,20 @@ namespace MarketData.Bench
                         ? new LadderBook(4096, minPrice - 10_000, maxPrice + 10_000)
                         : BookFactory.Create(name, 4096, maxPrice + 10_000);
 
-                    var result = LobsterReplay.ReplayTransitions(messages, reference, book);
-
-                    if (best is null || result.MessagesPerSecond > best.MessagesPerSecond)
-                        best = result;
+                    trialResults.Add(LobsterReplay.ReplayTransitions(messages, reference, book));
                 }
 
-                Console.WriteLine($"{name,18} {best.RowsCompared,14:N0} {best.RowsMatched,14:N0} " +
-                                  $"{best.MatchRate,10:P4} {best.MessagesPerSecond,12:N0} {best.Unverifiable,14:N0}");
+                var measured = MedianByRate(trialResults);
+                var (minimumRate, maximumRate) = RateRange(trialResults);
 
-                transitionReports.Add(new ReplayReport(name, best.MessagesApplied, best.RowsCompared,
-                    best.RowsMatched, Math.Round(best.MatchRate, 6), Math.Round(best.MessagesPerSecond, 0),
-                    best.FirstMismatchRow, best.FirstMismatchDetail, best.NegativeLevels, best.HiddenExecutions));
+                Console.WriteLine($"{name,18} {measured.RowsCompared,14:N0} {measured.RowsMatched,14:N0} " +
+                                  $"{measured.MatchRate,10:P4} {measured.MessagesPerSecond,12:N0} {measured.Unverifiable,14:N0}");
+
+                transitionReports.Add(new ReplayReport(name, measured.MessagesApplied, measured.RowsCompared,
+                    measured.RowsMatched, Math.Round(measured.MatchRate, 6), Math.Round(measured.MessagesPerSecond, 0),
+                    Math.Round(minimumRate, 0), Math.Round(maximumRate, 0), measured.Unverifiable,
+                    measured.FirstMismatchRow, measured.FirstMismatchDetail, measured.NegativeLevels,
+                    measured.HiddenExecutions));
             }
 
             var transitionMismatch = transitionReports[0].FirstMismatchDetail;
@@ -126,7 +136,11 @@ namespace MarketData.Bench
 
             foreach (var name in new[] { "SortedArray", "Vectorized", "Ladder", "Tree" })
             {
-                ReplayResult best = null;
+                var trialResults = new List<ReplayResult>(trials);
+                var warmBook = name == "Ladder"
+                    ? new LadderBook(4096, minPrice - band, maxPrice + band)
+                    : BookFactory.Create(name, 4096, maxPrice + band);
+                LobsterReplay.Replay(messages, reference, warmBook, warmup);
 
                 for (var trial = 0; trial < trials; trial++)
                 {
@@ -136,20 +150,22 @@ namespace MarketData.Bench
                         ? new LadderBook(4096, minPrice - band, maxPrice + band)
                         : BookFactory.Create(name, 4096, maxPrice + band);
 
-                    var result = LobsterReplay.Replay(messages, reference, book, warmup);
-
-                    if (best is null || result.MessagesPerSecond > best.MessagesPerSecond)
-                        best = result;
+                    trialResults.Add(LobsterReplay.Replay(messages, reference, book, warmup));
                 }
 
-                var mismatch = best.FirstMismatchRow < 0 ? "none" : best.FirstMismatchRow.ToString("N0");
-                Console.WriteLine($"{name,18} {best.RowsCompared,14:N0} {best.RowsMatched,14:N0} " +
-                                  $"{best.MatchRate,10:P4} {best.MessagesPerSecond,12:N0} {mismatch,15}");
+                var measured = MedianByRate(trialResults);
+                var (minimumRate, maximumRate) = RateRange(trialResults);
 
-                bestByImplementation.Add(best);
-                results.Add(new ReplayReport(name, best.MessagesApplied, best.RowsCompared, best.RowsMatched,
-                    Math.Round(best.MatchRate, 6), Math.Round(best.MessagesPerSecond, 0),
-                    best.FirstMismatchRow, best.FirstMismatchDetail, best.NegativeLevels, best.HiddenExecutions));
+                var mismatch = measured.FirstMismatchRow < 0 ? "none" : measured.FirstMismatchRow.ToString("N0");
+                Console.WriteLine($"{name,18} {measured.RowsCompared,14:N0} {measured.RowsMatched,14:N0} " +
+                                  $"{measured.MatchRate,10:P4} {measured.MessagesPerSecond,12:N0} {mismatch,15}");
+
+                representativeByImplementation.Add(measured);
+                results.Add(new ReplayReport(name, measured.MessagesApplied, measured.RowsCompared, measured.RowsMatched,
+                    Math.Round(measured.MatchRate, 6), Math.Round(measured.MessagesPerSecond, 0),
+                    Math.Round(minimumRate, 0), Math.Round(maximumRate, 0), measured.Unverifiable,
+                    measured.FirstMismatchRow, measured.FirstMismatchDetail, measured.NegativeLevels,
+                    measured.HiddenExecutions));
             }
 
             Console.WriteLine();
@@ -162,10 +178,10 @@ namespace MarketData.Bench
 
             for (var k = 0; k < levels; k++)
             {
-                var matched = bestByImplementation[0].MatchedByDepth[k];
-                var share = bestByImplementation[0].RowsCompared == 0
+                var matched = representativeByImplementation[0].MatchedByDepth[k];
+                var share = representativeByImplementation[0].RowsCompared == 0
                     ? 0
-                    : matched / (double)bestByImplementation[0].RowsCompared;
+                    : matched / (double)representativeByImplementation[0].RowsCompared;
 
                 Console.WriteLine($"{k + 1,13} {matched,14:N0} {share,9:P3}");
                 depthCurve.Add(new DepthPoint(k + 1, matched, Math.Round(share, 6)));
@@ -195,6 +211,14 @@ namespace MarketData.Bench
                 File.WriteAllText(perSession, JsonSerializer.Serialize(
                     new
                     {
+                        TimestampUtc = DateTimeOffset.UtcNow,
+                        Runtime = RuntimeInformation.FrameworkDescription,
+                        OperatingSystem = RuntimeInformation.OSDescription,
+                        Architecture = RuntimeInformation.ProcessArchitecture.ToString(),
+                        LogicalProcessors = Environment.ProcessorCount,
+                        ServerGc = System.Runtime.GCSettings.IsServerGC,
+                        Trials = trials,
+                        SeedAfterMessages = Math.Max(1, warmup),
                         Session = session.ToString(),
                         Symbol = session.Symbol,
                         Levels = session.Levels,
@@ -262,8 +286,10 @@ namespace MarketData.Bench
 
         private static ParserReport MeasureParseThroughput(byte[] messages, int trials)
         {
-            var best = 0.0;
+            var rates = new double[trials];
             long parsed = 0;
+            var warm = new LobsterReader(messages);
+            while (warm.TryReadMessage(out _)) { }
 
             for (var trial = 0; trial < trials; trial++)
             {
@@ -284,32 +310,42 @@ namespace MarketData.Bench
                 if (checksum == long.MinValue)
                     throw new InvalidOperationException("unreachable");
 
-                var rate = parsed / elapsed;
-
-                if (rate > best)
-                    best = rate;
+                rates[trial] = parsed / elapsed;
             }
 
-            // Allocation over a full parse, warmed first.
-            var warm = new LobsterReader(messages);
-            while (warm.TryReadMessage(out _)) { }
+            Array.Sort(rates);
+            var median = rates[trials / 2];
 
+            // Allocation over a full parse after the timed passes have warmed the path.
             var before = GC.GetAllocatedBytesForCurrentThread();
             var measured = new LobsterReader(messages);
             long counted = 0;
             while (measured.TryReadMessage(out _)) counted++;
             var bytes = GC.GetAllocatedBytesForCurrentThread() - before;
 
-            return new ParserReport(Math.Round(best, 0),
-                Math.Round(best * messages.Length / parsed / 1024 / 1024, 1),
+            return new ParserReport(Math.Round(median, 0), Math.Round(rates[0], 0),
+                Math.Round(rates[^1], 0),
+                Math.Round(median * messages.Length / parsed / 1024 / 1024, 1),
                 counted == 0 ? 0 : bytes / counted);
         }
 
-        private record ReplayReport(string Implementation, long MessagesApplied, long RowsCompared,
-            long RowsMatched, double MatchRate, double MessagesPerSecond, long FirstMismatchRow,
-            string FirstMismatchDetail, long NegativeLevels, long HiddenExecutions);
+        private static ReplayResult MedianByRate(List<ReplayResult> results)
+        {
+            results.Sort((left, right) => left.MessagesPerSecond.CompareTo(right.MessagesPerSecond));
+            return results[results.Count / 2];
+        }
 
-        private record ParserReport(double MessagesPerSecond, double MebibytesPerSecond, long BytesPerMessage);
+        private static (double Minimum, double Maximum) RateRange(List<ReplayResult> results)
+            => (results[0].MessagesPerSecond, results[^1].MessagesPerSecond);
+
+        private record ReplayReport(string Implementation, long MessagesApplied, long RowsCompared,
+            long RowsMatched, double MatchRate, double MessagesPerSecond,
+            double MinMessagesPerSecond, double MaxMessagesPerSecond, long Unverifiable,
+            long FirstMismatchRow, string FirstMismatchDetail, long NegativeLevels,
+            long HiddenExecutions);
+
+        private record ParserReport(double MessagesPerSecond, double MinMessagesPerSecond,
+            double MaxMessagesPerSecond, double MebibytesPerSecond, long BytesPerMessage);
 
         private record DepthPoint(int Levels, long RowsExact, double Share);
     }

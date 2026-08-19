@@ -1,0 +1,4 @@
+06f6c932e267ed124f5cedb25e637c42656af383ca61d074e8f4e8f6d5ec2f81  data/sample/AMZN_message_20k.csv.gz
+e43ad9b47614a6a7a2a59af13ffaaddb34a81e25e26875bf4e5c84dd28638c89  data/sample/AMZN_orderbook_20k.csv.gz
+f6e065154c7e7163affe2a08f300b108399ee72868bb76e9edf870001e02f3c2  data/sample/MSFT_message_20k.csv.gz
+898791ed45850e8552a2c89a5be37fd16e7a7487b13c07e0d4bb14ab4d40871e  data/sample/MSFT_orderbook_20k.csv.gz

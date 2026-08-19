@@ -83,6 +83,7 @@ namespace MarketData.Common.Lobster
         {
             var result = new ReplayResult();
             var levels = DetectLevels(reference);
+            var seedAfter = Math.Max(1, warmupMessages);
 
             if (levels == 0)
                 return result;
@@ -111,14 +112,14 @@ namespace MarketData.Common.Lobster
                 Apply(book, message, result);
                 result.MessagesApplied++;
 
-                if (row == warmupMessages)
+                if (row == seedAfter)
                 {
                     // Re-seed from the exchange's own state, then judge everything after it.
                     Seed(book, referenceRow, levels);
                     continue;
                 }
 
-                if (row <= warmupMessages)
+                if (row <= seedAfter)
                     continue;
 
                 var askCount = book.CopyTo(Side.Ask, asks);
@@ -179,18 +180,6 @@ namespace MarketData.Common.Lobster
         }
 
         /// <summary>
-        /// Levels compared in a single-step transition. One fewer than the reference publishes,
-        /// because a message that removes a level promotes an unknown eleventh level into the
-        /// window; leaving one slot of slack keeps every compared level knowable.
-        /// </summary>
-        /// <summary>
-        /// Levels compared in a single-step transition: one fewer than the file publishes, because
-        /// a message that removes a level promotes an unknown deeper level into the window and
-        /// leaving a slot of slack keeps every compared level knowable.
-        /// </summary>
-        public static int TransitionLevels(int levels) => levels - 1;
-
-        /// <summary>
         /// Validates each message as a single transition between two published book states.
         /// </summary>
         /// <remarks>
@@ -242,7 +231,9 @@ namespace MarketData.Common.Lobster
                 if (message.Type == LobsterEventType.HiddenExecution)
                     result.HiddenExecutions++;
 
-                if (!IsVerifiable(previousRow, levels, message))
+                var comparableLevels = ComparableLevels(previousRow, levels, message);
+
+                if (comparableLevels == 0)
                 {
                     result.Unverifiable++;
                     currentRow.CopyTo(previousRow);
@@ -262,7 +253,7 @@ namespace MarketData.Common.Lobster
                 for (var k = 0; k < correctDepth && k < result.MatchedByDepth.Length; k++)
                     result.MatchedByDepth[k]++;
 
-                if (correctDepth >= TransitionLevels(levels))
+                if (correctDepth >= comparableLevels)
                 {
                     result.RowsMatched++;
                 }
@@ -281,25 +272,32 @@ namespace MarketData.Common.Lobster
             return result;
         }
 
-        /// <summary>
-        /// True when a level-10 snapshot is enough to predict the message's effect on the window.
-        /// </summary>
-        private static bool IsVerifiable(ReadOnlySpan<int> previousRow, int levels, in LobsterMessage message)
+        /// <summary>Published prefix whose next state is determined by the prior row and event.</summary>
+        private static int ComparableLevels(ReadOnlySpan<int> previousRow, int levels,
+            in LobsterMessage message)
         {
-            if (!message.AffectsVisibleBook)
-                return true; // no change expected, which is itself worth checking
+            if (!message.AffectsVisibleBook || message.SizeDelta >= 0)
+                return levels;
 
-            // The message must land at or inside the deepest level published for its side,
-            // otherwise the snapshot simply does not say what is there.
             var isBid = message.Side == Side.Bid;
-            var deepestOffset = (levels - 1) * 4 + (isBid ? 2 : 0);
-            var deepestPrice = previousRow[deepestOffset];
-            var deepestSize = previousRow[deepestOffset + 1];
+            var sideOffset = isBid ? 2 : 0;
+            var deepestSize = previousRow[(levels - 1) * 4 + sideOffset + 1];
 
-            if (deepestSize <= 0)
-                return true; // fewer than ten levels published, so the whole book is visible
+            for (var level = 0; level < levels; level++)
+            {
+                var offset = level * 4 + sideOffset;
+                var price = previousRow[offset];
+                var size = previousRow[offset + 1];
 
-            return isBid ? message.Price >= deepestPrice : message.Price <= deepestPrice;
+                if (size <= 0)
+                    break;
+
+                if (price == message.Price && (long)size + message.SizeDelta <= 0)
+                    return deepestSize > 0 ? levels - 1 : levels;
+            }
+
+            // A reduction outside the published window cannot change its visible prefix.
+            return levels;
         }
 
         /// <summary>Replaces book state with a reference row, discarding whatever was there.</summary>

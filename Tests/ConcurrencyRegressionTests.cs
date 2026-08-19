@@ -36,8 +36,8 @@ namespace MarketData.Tests
         }
 
         [Fact]
-        public void TheLargestRepresentablePowerOfTwoIsStillAccepted()
-            => Assert.Equal(1 << 30, new RingBuffer<byte>(1 << 30).Capacity);
+        public void MaximumCapacityIsTheLargestRepresentablePowerOfTwo()
+            => Assert.Equal(1 << 30, RingBuffer<byte>.MaxCapacity);
 
         /// <summary>
         /// Releasing more than <see cref="RingBuffer{T}.PeekBatch"/> offered must throw.
@@ -96,27 +96,30 @@ namespace MarketData.Tests
         /// metric the whole fan-out is judged by.
         /// </remarks>
         [Fact]
-        public void CountNeverGoesNegativeWhileBothCursorsMove()
+        public async Task CountNeverGoesNegativeWhileBothCursorsMove()
         {
             var ring = new RingBuffer<int>(1024);
-            using var done = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            using var done = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            done.CancelAfter(TimeSpan.FromSeconds(2));
+            var cancellationToken = done.Token;
 
             var negatives = 0;
             var aboveCapacity = 0;
 
             var producer = Task.Run(() =>
             {
-                while (!done.IsCancellationRequested)
+                while (!cancellationToken.IsCancellationRequested)
                     ring.TryWrite(1);
-            });
+            }, cancellationToken);
 
             var consumer = Task.Run(() =>
             {
-                while (!done.IsCancellationRequested)
+                while (!cancellationToken.IsCancellationRequested)
                     ring.TryRead(out _);
-            });
+            }, cancellationToken);
 
-            while (!done.IsCancellationRequested)
+            while (!cancellationToken.IsCancellationRequested)
             {
                 var count = ring.Count;
 
@@ -127,7 +130,7 @@ namespace MarketData.Tests
                     aboveCapacity++;
             }
 
-            Task.WaitAll(producer, consumer);
+            await Task.WhenAll(producer, consumer);
 
             Assert.Equal(0, negatives);
             Assert.Equal(0, aboveCapacity);
@@ -152,10 +155,11 @@ namespace MarketData.Tests
 
             long correct = 0;
             using var start = new Barrier(threads);
+            var cancellationToken = TestContext.Current.CancellationToken;
 
-            Parallel.For(0, threads, thread =>
+            Parallel.For(0, threads, new ParallelOptions { CancellationToken = cancellationToken }, thread =>
             {
-                start.SignalAndWait();
+                start.SignalAndWait(cancellationToken);
 
                 for (var i = 1; i <= perThread; i++)
                 {
@@ -172,21 +176,24 @@ namespace MarketData.Tests
 
         /// <summary>A queue with no producers yet must not block a consumer's shutdown.</summary>
         [Fact]
-        public void TakingFromAnEmptyQueueHonoursTheCallersToken()
+        public async Task TakingFromAnEmptyQueueHonoursTheCallersToken()
         {
             using var queue = new DisseminationQueue<int>();
-            using var cancellation = new CancellationTokenSource();
+            using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
 
-            var ring = queue.AddProducer();
-            var taken = Task.Run(() => queue.TryTake(out _, cancellation.Token));
+            queue.AddProducer();
+            var taken = Task.Run(() => queue.TryTake(out _, cancellation.Token),
+                TestContext.Current.CancellationToken);
 
             // Long enough for TryTake to exhaust its spin and yield budget and reach the blocking wait.
-            Assert.False(taken.Wait(TimeSpan.FromMilliseconds(200)));
+            await Task.Delay(TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken);
+            Assert.False(taken.IsCompleted);
 
             cancellation.Cancel();
 
-            Assert.True(taken.Wait(TimeSpan.FromSeconds(5)), "TryTake did not observe cancellation.");
-            Assert.False(taken.Result);
+            Assert.False(await taken.WaitAsync(TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken));
         }
 
         /// <summary>Every producer's ring is drained, no matter how loud its neighbours are.</summary>
@@ -195,10 +202,13 @@ namespace MarketData.Tests
         /// not be able to monopolise it, or one busy instrument would starve the rest of the feed.
         /// </remarks>
         [Fact]
-        public void ALoudProducerCannotStarveAQuietOne()
+        public async Task ALoudProducerCannotStarveAQuietOne()
         {
             using var queue = new DisseminationQueue<int>(1024);
-            using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            shutdown.CancelAfter(TimeSpan.FromSeconds(5));
+            var cancellationToken = shutdown.Token;
 
             var loud = queue.AddProducer();
             var quiet = queue.AddProducer();
@@ -209,9 +219,9 @@ namespace MarketData.Tests
 
             var consumer = Task.Run(() =>
             {
-                while (quietSeen < quietMessages && !shutdown.IsCancellationRequested)
+                while (quietSeen < quietMessages && !cancellationToken.IsCancellationRequested)
                 {
-                    if (!queue.TryTake(out var value, shutdown.Token))
+                    if (!queue.TryTake(out var value, cancellationToken))
                         break;
 
                     if (value == 1)
@@ -219,28 +229,28 @@ namespace MarketData.Tests
                     else
                         loudSeen++;
                 }
-            });
+            }, cancellationToken);
 
             var loudProducer = Task.Run(() =>
             {
-                while (!consumer.IsCompleted && !shutdown.IsCancellationRequested)
+                while (!consumer.IsCompleted && !cancellationToken.IsCancellationRequested)
                 {
                     loud.TryWrite(0);
                     queue.Signal();
                 }
-            });
+            }, cancellationToken);
 
             for (var i = 0; i < quietMessages; i++)
             {
-                while (!quiet.TryWrite(1) && !shutdown.IsCancellationRequested)
+                while (!quiet.TryWrite(1) && !cancellationToken.IsCancellationRequested)
                     Thread.Yield();
 
                 queue.Signal();
-                Thread.Sleep(1);
+                await Task.Delay(1, cancellationToken);
             }
 
-            Assert.True(consumer.Wait(TimeSpan.FromSeconds(10)), "Consumer never drained the quiet producer.");
-            loudProducer.Wait(TimeSpan.FromSeconds(5));
+            await consumer.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            await loudProducer.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
             Assert.Equal(quietMessages, quietSeen);
             Assert.True(loudSeen > 0, "The loud producer was not actually competing.");
@@ -248,10 +258,13 @@ namespace MarketData.Tests
 
         /// <summary>Producers registered while the consumer is already draining are not missed.</summary>
         [Fact]
-        public void ProducersAddedDuringDrainingAreStillServed()
+        public async Task ProducersAddedDuringDrainingAreStillServed()
         {
             using var queue = new DisseminationQueue<int>(64);
-            using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            shutdown.CancelAfter(TimeSpan.FromSeconds(10));
+            var cancellationToken = shutdown.Token;
 
             const int producers = 8;
             const int perProducer = 500;
@@ -260,14 +273,14 @@ namespace MarketData.Tests
 
             var consumer = Task.Run(() =>
             {
-                while (received.Count < producers * perProducer && !shutdown.IsCancellationRequested)
+                while (received.Count < producers * perProducer && !cancellationToken.IsCancellationRequested)
                 {
-                    if (!queue.TryTake(out var value, shutdown.Token))
+                    if (!queue.TryTake(out var value, cancellationToken))
                         break;
 
                     received.Add(value);
                 }
-            });
+            }, cancellationToken);
 
             var writers = Enumerable.Range(0, producers).Select(id => Task.Run(() =>
             {
@@ -275,7 +288,7 @@ namespace MarketData.Tests
 
                 for (var i = 0; i < perProducer; i++)
                 {
-                    while (!ring.TryWrite(id) && !shutdown.IsCancellationRequested)
+                    while (!ring.TryWrite(id) && !cancellationToken.IsCancellationRequested)
                     {
                         queue.Signal();
                         Thread.Yield();
@@ -283,10 +296,11 @@ namespace MarketData.Tests
 
                     queue.Signal();
                 }
-            })).ToArray();
+            }, cancellationToken)).ToArray();
 
-            Assert.True(Task.WaitAll(writers, TimeSpan.FromSeconds(10)), "Producers did not finish.");
-            Assert.True(consumer.Wait(TimeSpan.FromSeconds(10)), "Consumer did not drain every producer.");
+            await Task.WhenAll(writers).WaitAsync(TimeSpan.FromSeconds(10),
+                TestContext.Current.CancellationToken);
+            await consumer.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
             Assert.Equal(producers * perProducer, received.Count);
 
@@ -314,7 +328,7 @@ namespace MarketData.Tests
             Assert.Equal(20, queue.Depth);
 
             for (var i = 0; i < 20; i++)
-                Assert.True(queue.TryTake(out _, CancellationToken.None));
+                Assert.True(queue.TryTake(out _, TestContext.Current.CancellationToken));
 
             Assert.Equal(0, queue.Depth);
         }

@@ -30,6 +30,8 @@ namespace MarketData.Bench
             var subscribers = 100;
             var group = "239.7.7.7";
             var port = 31007;
+            string redundantGroup = null;
+            var redundantPort = 0;
             var @interface = "127.0.0.1";
             var warmup = 5.0;
             var duration = 20.0;
@@ -44,6 +46,8 @@ namespace MarketData.Bench
                     case "--subscribers": subscribers = int.Parse(args[++i], CultureInfo.InvariantCulture); break;
                     case "--group": group = args[++i]; break;
                     case "--port": port = int.Parse(args[++i], CultureInfo.InvariantCulture); break;
+                    case "--redundant-group": redundantGroup = args[++i]; break;
+                    case "--redundant-port": redundantPort = int.Parse(args[++i], CultureInfo.InvariantCulture); break;
                     case "--interface": @interface = args[++i]; break;
                     case "--warmup": warmup = double.Parse(args[++i], CultureInfo.InvariantCulture); break;
                     case "--duration": duration = double.Parse(args[++i], CultureInfo.InvariantCulture); break;
@@ -53,7 +57,11 @@ namespace MarketData.Bench
                 }
             }
 
-            Console.WriteLine($"Multicast subscribers={subscribers} group={group}:{port} " +
+            var effectiveRedundantPort = redundantGroup is null ? 0 : redundantPort > 0 ? redundantPort : port;
+            var topology = redundantGroup is null
+                ? $"{group}:{port}"
+                : $"{group}:{port} + {redundantGroup}:{effectiveRedundantPort}";
+            Console.WriteLine($"Multicast subscribers={subscribers} groups={topology} " +
                               $"warmup={warmup}s measure={duration}s rcvbuf={receiveBuffer / 1024}KiB");
 
             var histogram = new LatencyHistogram(32);
@@ -62,6 +70,7 @@ namespace MarketData.Bench
 
             using var lifetime = new CancellationTokenSource();
             var groupAddress = IPAddress.Parse(group);
+            var redundantGroupAddress = redundantGroup is null ? null : IPAddress.Parse(redundantGroup);
             var interfaceAddress = IPAddress.Parse(@interface);
 
             var clients = new List<MulticastSubscriber>(subscribers);
@@ -71,7 +80,8 @@ namespace MarketData.Bench
             {
                 var index = i;
                 var subscriber = new MulticastSubscriber(groupAddress, port, interfaceAddress,
-                    _ => new SortedArrayBook(10), receiveBuffer);
+                    _ => new SortedArrayBook(10), receiveBuffer, redundantGroupAddress,
+                    redundantPort);
 
                 subscriber.Decoder.MessageObserved += sourceTimestamp =>
                 {
@@ -108,6 +118,10 @@ namespace MarketData.Bench
             var report = new MulticastReport(
                 label,
                 DateTimeOffset.UtcNow,
+                group,
+                port,
+                redundantGroup ?? "",
+                effectiveRedundantPort,
                 subscribers,
                 Math.Round(elapsed, 3),
                 messages,
@@ -117,8 +131,13 @@ namespace MarketData.Bench
                 after.Gaps - before.Gaps,
                 after.MissedMessages - before.MissedMessages,
                 after.Duplicates - before.Duplicates,
+                after.LineDivergences - before.LineDivergences,
                 after.Malformed - before.Malformed,
+                after.IntegrityFailures - before.IntegrityFailures,
                 after.Recoveries - before.Recoveries,
+                after.SessionChanges - before.SessionChanges,
+                after.OldSessionPackets - before.OldSessionPackets,
+                after.IgnoredIncrementals - before.IgnoredIncrementals,
                 clients.Count(i => i.Decoder.IsStale),
                 Math.Round(summary.MeanMs, 4),
                 Math.Round(summary.MinMs, 4),
@@ -134,7 +153,9 @@ namespace MarketData.Bench
             Console.WriteLine($"RESULT latency ms: mean={report.MeanMs:0.####} min={report.MinMs:0.####} " +
                               $"p50={report.P50Ms:0.####} p99={report.P99Ms:0.####} max={report.MaxMs:0.####}");
             Console.WriteLine($"RESULT feed: packets={report.Packets} gaps={report.Gaps} missed={report.MissedMessages} " +
-                              $"dupes={report.Duplicates} malformed={report.Malformed} recoveries={report.Recoveries} " +
+                              $"dupes={report.Duplicates} divergence={report.LineDivergences} " +
+                              $"malformed={report.Malformed} integrity={report.IntegrityFailures} " +
+                              $"recoveries={report.Recoveries} ignored={report.IgnoredIncrementals} " +
                               $"stale={report.StaleSubscribers}");
 
             if (outputPath is not null)
@@ -162,8 +183,13 @@ namespace MarketData.Bench
                 total.Gaps += Interlocked.Read(ref statistics.Gaps);
                 total.MissedMessages += Interlocked.Read(ref statistics.MissedMessages);
                 total.Duplicates += Interlocked.Read(ref statistics.Duplicates);
+                total.LineDivergences += Interlocked.Read(ref statistics.LineDivergences);
                 total.Malformed += Interlocked.Read(ref statistics.Malformed);
+                total.IntegrityFailures += Interlocked.Read(ref statistics.IntegrityFailures);
                 total.Recoveries += Interlocked.Read(ref statistics.Recoveries);
+                total.SessionChanges += Interlocked.Read(ref statistics.SessionChanges);
+                total.OldSessionPackets += Interlocked.Read(ref statistics.OldSessionPackets);
+                total.IgnoredIncrementals += Interlocked.Read(ref statistics.IgnoredIncrementals);
             }
 
             return total;
@@ -172,6 +198,10 @@ namespace MarketData.Bench
         private record MulticastReport(
             string Label,
             DateTimeOffset TimestampUtc,
+            string Group,
+            int Port,
+            string RedundantGroup,
+            int RedundantPort,
             int Subscribers,
             double MeasuredSeconds,
             long MessagesReceived,
@@ -181,8 +211,13 @@ namespace MarketData.Bench
             long Gaps,
             long MissedMessages,
             long Duplicates,
+            long LineDivergences,
             long Malformed,
+            long IntegrityFailures,
             long Recoveries,
+            long SessionChanges,
+            long OldSessionPackets,
+            long IgnoredIncrementals,
             int StaleSubscribers,
             double MeanMs,
             double MinMs,

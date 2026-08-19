@@ -20,7 +20,8 @@ namespace MarketData.Server
             _service = CreateService(config);
 
             foreach (var instrument in config.Instruments)
-                _orderbooks.Add(instrument.Id, new Orderbook(instrument, _service.RegisterProducer(), config.BookImplementation, config.PriceBand));
+                _orderbooks.Add(instrument.Id,
+                    new Orderbook(instrument, _service.RegisterProducer(), config.PriceBand, config.Seed));
         }
 
         /// <summary>
@@ -32,7 +33,8 @@ namespace MarketData.Server
         private IOrderbookService CreateService(ServerConfiguration config)
         {
             if (!config.Multicast.Enabled)
-                return new OrderbookService(config.Port, this, config.VerboseLogging, config.SubscriberQueueCapacity, config.UseRingQueue);
+                return new OrderbookService(config.Port, this, config.VerboseLogging,
+                    config.SubscriberQueueCapacity, config.UseRingQueue);
 
             return new MulticastOrderbookService(
                 IPAddress.Parse(config.Multicast.Group),
@@ -41,7 +43,11 @@ namespace MarketData.Server
                 config.Multicast.MaxBatch,
                 TimeSpan.FromMilliseconds(config.Multicast.FlushIntervalMs),
                 TimeSpan.FromSeconds(config.Multicast.SnapshotIntervalSeconds),
-                this);
+                this,
+                string.IsNullOrWhiteSpace(config.Multicast.RedundantGroup)
+                    ? null
+                    : IPAddress.Parse(config.Multicast.RedundantGroup),
+                config.Multicast.RedundantPort);
         }
 
         public IReadOnlyCollection<int> InstrumentIds => _orderbooks.Keys;
@@ -53,11 +59,16 @@ namespace MarketData.Server
             Console.WriteLine(
                 (_config.Multicast.Enabled
                     ? $"Publishing to multicast {_config.Multicast.Group}:{_config.Multicast.Port} " +
+                      (string.IsNullOrWhiteSpace(_config.Multicast.RedundantGroup)
+                          ? ""
+                          : $"+ {_config.Multicast.RedundantGroup}:" +
+                            $"{(_config.Multicast.RedundantPort == 0 ? _config.Multicast.Port : _config.Multicast.RedundantPort)} ") +
                       $"(batch {_config.Multicast.MaxBatch}, snapshot every {_config.Multicast.SnapshotIntervalSeconds}s)"
                     : $"Listening on {_config.Port} ({(_config.UseRingQueue ? "ring" : "channel")} queue)")
                 + " | instruments: " + string.Join(", ",
-                _config.Instruments.Select(i => $"{i.Symbol}(depth {i.Specifications.Depth}, {i.Specifications.UpdatesPerSecond:0.##}/s)"))
-                + $" | book: {_config.BookImplementation}");
+                _config.Instruments.Select(i =>
+                    $"{i.Symbol}(depth {i.Specifications.Depth}, {i.Specifications.UpdatesPerSecond:0.##}/s)"))
+                + $" | seed: {_config.Seed}");
 
             using var lifetime = _config.RunForSeconds > 0
                 ? new CancellationTokenSource(TimeSpan.FromSeconds(_config.RunForSeconds))

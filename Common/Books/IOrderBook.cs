@@ -7,13 +7,7 @@ namespace MarketData.Common.Books
     /// One side-aggregated limit order book, capped at a fixed display depth.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// Three implementations sit behind this interface - <see cref="SortedArrayBook"/>,
-    /// <see cref="LadderBook"/> and <see cref="TreeBook"/> - with deliberately different
-    /// complexity profiles. They are held to identical observable behaviour by differential
-    /// tests, so the choice between them is purely a performance question and can be made with
-    /// measurements rather than argument.
-    /// </para>
+    /// <para>Four implementations with distinct complexity profiles share differential tests.</para>
     /// <para>
     /// Depth is a hard cap. Applying a level worse than the current worst level on a full side is
     /// a no-op; applying one better evicts the worst. This mirrors a depth-limited exchange feed,
