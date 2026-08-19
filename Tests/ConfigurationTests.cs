@@ -1,5 +1,6 @@
 using MarketData.Common;
 using MarketData.Common.Feed;
+using MarketData.Common.Durability;
 using MarketData.Server.Configuration;
 using Xunit;
 
@@ -79,6 +80,31 @@ namespace MarketData.Tests
 
             config.Multicast.RedundantGroup = "239.7.7.8";
             config.Multicast.RedundantPort = 31008;
+            config.Validate();
+        }
+
+        [Fact]
+        public void JournalAndRetransmissionConfigurationIsValidated()
+        {
+            var config = Valid();
+            config.Multicast.Enabled = true;
+            config.Multicast.Journal.RetransmissionPort = 32001;
+            Assert.Throws<InvalidDataException>(config.Validate);
+
+            config.Multicast.Journal.Enabled = true;
+            config.Multicast.Journal.Policy = "not-a-policy";
+            Assert.Throws<InvalidDataException>(config.Validate);
+
+            config.Multicast.Journal.Policy = "1";
+            Assert.Throws<InvalidDataException>(config.Validate);
+
+            config.Multicast.Journal.Policy = "SyncPeriodic";
+            config.Multicast.Journal.SyncIntervalMs = double.NaN;
+            Assert.Throws<InvalidDataException>(config.Validate);
+
+            config.Multicast.Journal.SyncIntervalMs = 10;
+            config.Multicast.Journal.SegmentBytes = JournalRecord.SizeFor(16) +
+                JournalRecord.SizeFor(JournalRecord.MaxPayloadSize);
             config.Validate();
         }
 

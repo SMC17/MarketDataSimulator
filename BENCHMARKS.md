@@ -32,6 +32,8 @@ this host; they are not hardware-independent capacity claims.
 - Allocation uses `GC.GetAllocatedBytesForCurrentThread` on single-threaded paths and
   `GC.GetTotalAllocatedBytes` on concurrent queue paths.
 - Packet bytes and checksums are consumed so dead-code elimination cannot remove protocol work.
+- WAL timings stop at the policy's acknowledgement point; final disposal sync is outside the timed
+  region. Range and recovery trials are warm-cache filesystem measurements.
 - Transport load is open-loop. Source timestamps precede dissemination, so backlog increases
   measured latency instead of reducing offered load.
 - CI runs smoke-sized benchmarks for rot detection; it does not gate performance on shared runners.
@@ -58,6 +60,41 @@ Batch validation scans 97 message boundaries; snapshot validation scans one larg
 end-to-end case includes seal, CRC validation, decoder locking, bounded reorder and A/B identity
 retention, sequencing, and in-place depth application. CRC correctness is checked against the
 standard `123456789` vector. Corruption tests assert that state and sequence do not advance.
+
+## Durable publication and recovery
+
+Artifact: `bench/results/durability-v2.json`. Five trials; 5,000 append acknowledgements per trial,
+50,000-message recovery log, and 100 ten-message range requests. The JSON embeds runtime and host
+metadata.
+
+<!-- generated: v2-durability -->
+| Append contract | Policy | Payload | Median | Min–max | Rate | Syncs/trial | Allocation |
+|---|---|---|---|---|---|---|---|
+| OS page cache | OsBuffered | 64 B | 976.7 ns | 958.0–2,088.2 ns | 1,023,815/s | 0 | 0 B/op |
+| periodic 1 ms | SyncPeriodic | 64 B | 2,318.3 ns | 2,149.5–3,507.9 ns | 431,343/s | 4 | 0 B/op |
+| group commit 64 | OsBuffered | 64 B | 27,301.7 ns | 17,837.9–42,412.7 ns | 36,628/s | 79 | 0 B/op |
+| fsync each | SyncEachRecord | 64 B | 972,646.2 ns | 898,242.4–1,196,500.7 ns | 1,028/s | 5,000 | 0 B/op |
+| seal + packet WAL | OsBuffered | 50 B | 813.7 ns | 755.1–1,676.6 ns | 1,228,894/s | 0 | 0 B/op |
+
+| Messages | Checkpoint | Full replay | Checkpoint + tail | Speed-up |
+|---|---|---|---|---|
+| 50,000 | 47,500 | 24.68 ms (21.00–40.83) | 2.92 ms (2.64–3.84) | 8.45× |
+
+| 10-message range | Queries | Index entries | Median | Min–max | Allocation |
+|---|---|---|---|---|---|
+| sparse index | 100 | 196 | 73.6 µs | 70.2–81.7 µs | 1,736 B/request |
+| segment scan | 100 | 0 | 1,946.8 µs | 927.1–2,530.3 µs | 5,848 B/request |
+<!-- /generated -->
+
+`OS page cache` includes framing, CRC-32C, and one unbuffered managed write into the kernel cache;
+it is not power-loss durability. `seal + packet WAL` also seals and validates the 50-byte feed
+packet. The 1 ms periodic case stresses group sync; the configurable server default is 200 ms.
+`fsync each` measures this virtual disk, not a portable storage latency.
+
+Recovery trials alternate full-first and checkpoint-first order. The checkpoint is at sequence
+47,500; complete segments before it are skipped. The sparse range index stores one entry per 256
+records and incrementally follows the live tail. Both range cases copy the same ten payloads; the
+table isolates lookup strategy.
 
 ## Matching engine
 
@@ -168,15 +205,8 @@ arbitration with zero sequence gaps.
 
 ## Transport scaling (pre-v2 generation)
 
-The sections above measure the v2 protocol and its recovery path. They do not measure how the
-dissemination architecture scales with the *audience*, which is a separate question and the one
-this project was originally built to answer. That record is retained here.
-
-**Read this section under the artifact boundary below.** These runs predate protocol v2 and were
-recorded on a different host (4 vCPU; see the table below) from the v2 measurements (8 logical
-processors). Nothing here is comparable with a v2 number, and none of it is combined into a single
-claim with one. What it is comparable with is itself: every row below was measured on one host in
-one session, which is what makes the unicast-versus-multicast comparison meaningful.
+These runs predate protocol v2 and use a separate 4-vCPU host. Compare rows within this section;
+do not compare them with v2 results.
 
 <!-- generated: environment -->
 |  |  |
@@ -190,11 +220,10 @@ one session, which is what makes the unicast-versus-multicast comparison meaning
 | Topology | server and load generator as separate processes on the same host |
 <!-- /generated -->
 
-### The O(N) wall
+### Unicast fan-out
 
-TCP fan-out performs one write per subscriber per update, so a subscriber's latency is essentially
-its position in that span. Two runs matched on messages per second, differing only in how many
-subscribers the work is spread across:
+TCP fan-out performs one write per subscriber per update. These runs have similar delivered rates
+but different subscriber counts:
 
 <!-- generated: equal-work -->
 | Subscribers | Feed rate | Fan-out | Mean latency |
@@ -203,8 +232,8 @@ subscribers the work is spread across:
 | 1,000 | 10 upd/s | 10,100 msg/s | **18.63 ms** |
 <!-- /generated -->
 
-Identical work per second; ten times the audience costs an order of magnitude more latency, and
-neither run was CPU-starved. No amount of tuning removes an O(N) term.
+At approximately 10,000 messages/s, increasing the audience from 100 to 1,000 subscribers raised
+mean latency from 1.61 ms to 18.63 ms.
 
 The full sweep, feed rate held at 100 updates/s aggregate:
 
@@ -222,10 +251,8 @@ The full sweep, feed rate held at 100 updates/s aggregate:
 | 900 | 86,621 | **46.15** | 23.75 | 216.7 | 254.2 | 322.8 | 99.2% | 97% | 229.4% | 378.8% | yes |
 <!-- /generated -->
 
-Every point sustained, so this sweep does not contain unicast's breaking point — but the wall is
-visible in the server's own CPU, which rises from 53% to 229% of 400% while host CPU reaches 379%.
-At 900 subscribers the latency distribution has begun to come apart: p99 of 216.7 ms against a mean
-of 46.2 ms.
+Every point sustained; 900 subscribers is the top of the sweep, not a measured limit. Server CPU
+rose from 52.8% to 229.4%; p99 reached 216.7 ms at 900 subscribers.
 
 A second sweep holds the message rate constant on a lighter feed:
 
@@ -239,7 +266,7 @@ A second sweep holds the message rate constant on a lighter feed:
 | 5,000 | 50,334 | **96.83** | 87.95 | 321.1 | 387.1 | 422.2 | 100.7% | 100% | 157.4% | 304.2% | yes |
 <!-- /generated -->
 
-### Multicast removes the term
+### Multicast fan-out
 
 The publisher encodes each update once and sends a single datagram; the network performs the
 replication.
@@ -257,21 +284,14 @@ replication.
 | 8,000 | 594,357 | **744.52** | 350.45 | 10365.0 | 24032.8 | 91.2% | 81.5 | 594 | 0 | 91.6% | 373.9% | **NO** |
 <!-- /generated -->
 
-**The `Server pkt/s` column is the result.** It does not move — 98.6 to 100.3 packets per second
-from 100 subscribers to 6,000. The publisher transmits at the update rate and holds no subscriber
-table at all.
-
-8,000 is where it breaks, and it breaks the way an unreliable transport should: 594 sequence gaps,
-detected and reported by the affected subscribers rather than silently corrupting anybody's book.
-That failure is left in the table rather than trimmed off the end of it.
+Server packet rate stayed between 98.6 and 100.3/s through 6,000 subscribers. The 8,000-subscriber
+run was not sustained and recorded 594 sequence gaps.
 
 <!-- generated: head-to-head -->
 | Subscribers | Unicast mean | Multicast mean | Improvement |
 |---|---|---|---|
 | 100 | 1.61 ms | **0.31 ms** | **5.3×** |
 | 500 | 8.54 ms | **0.85 ms** | **10.1×** |
-
-Multicast was also measured at 250, 1,000, 2,000, 4,000, 6,000, 8,000 subscribers, where unicast was not run; those points are in the multicast sweep in BENCHMARKS.md.
 <!-- /generated -->
 
 Cost per delivered message, at each transport's highest sustained point:
@@ -281,19 +301,14 @@ Cost per delivered message, at each transport's highest sustained point:
 |---|---|---|---|---|
 | Unicast gRPC | 900 | 86,621 | 229.4% | **26.48 µs** |
 | Multicast | 6,000 | 594,067 | 73.2% | **1.23 µs** |
-
-Multicast delivers each message for **21× less server CPU**, to **6.7× the subscribers** at **6.9× the throughput**.
 <!-- /generated -->
 
-Note the asymmetry in that table: multicast's 6,000 is a real ceiling because 8,000 was measured
-and failed, whereas unicast's 900 is simply the top of the sweep — no unicast point failed, so its
-limit was never found and lies somewhere above 900.
+The next multicast point failed; no unicast failure point was measured.
 
 ### Batching
 
-Batching normally trades latency for throughput. On a fan-out feed it does the opposite, because
-per-packet cost is paid once per *subscriber*: 1,000 subscribers, 1,000 updates/s aggregate,
-varying only how many messages the publisher packs into a datagram.
+The following runs use 1,000 subscribers and 1,000 aggregate updates/s while varying packet batch
+size.
 
 <!-- generated: batching -->
 | Max batch | Fan-out (msg/s) | Mean (ms) | p99 | Server pkt/s | Server CPU | Host CPU |
@@ -304,10 +319,10 @@ varying only how many messages the publisher packs into a datagram.
 | 64 | 971,792 | **2.09** | 4.7 | 201.0 | 45.0% | 170.9% |
 <!-- /generated -->
 
-Packet rate falls 4.4×, mean latency 1.6×, p99 3.1×, host CPU 2.2× — while delivered throughput
-*rises* 12%.
+Batch 64 versus batch 1 reduced packet rate 4.4×, mean latency 1.6×, p99 3.1×, and host CPU 2.2×;
+delivered throughput increased 12%.
 
-### Repeatability, and what a single sweep point is worth
+### Repeatability
 
 <!-- generated: repeatability -->
 | Point | Runs | Median | Min | Max | Spread |
@@ -316,8 +331,7 @@ Packet rate falls 4.4×, mean latency 1.6×, p99 3.1×, host CPU 2.2× — while
 | 500 subscribers, 100 upd/s | 3 | 8.64 ms | 7.73 | 8.66 | 1.12× |
 <!-- /generated -->
 
-A 1.4× range across three runs of an identical configuration at 4,000 subscribers. Every point in
-the sweep tables above is a single run, so read them with that spread in mind.
+The 4,000-subscriber configuration varied 1.4× across three runs. Sweep rows are single runs.
 
 ## Market realism
 
@@ -344,11 +358,8 @@ Files carrying `v2` or `protocolv2` are the current protocol/recovery record. Un
 the earlier transport sweeps, microstructure study, regenerated controls, and repeatability runs,
 presented under [Transport scaling](#transport-scaling-pre-v2-generation).
 
-The two generations were measured on different hosts and **are not combined into one claim**.
-`docgen.py` enforces this: it partitions results by generation and refuses to render if either
-generation contains results from more than one kernel instance. What that check cannot enforce is
-prose, so the rule for a reader is simple — a v2 number and a pre-v2 number never belong in the same
-sentence, and no comparison in this document crosses that line.
+The generations use different hosts and are not compared. `docgen.py` rejects mixed kernel
+instances within either generation.
 
 ## Reproduce
 
@@ -357,6 +368,10 @@ dotnet build MarketDataSimulator.sln -c Release
 
 dotnet run --project Bench -c Release --no-build -- \
   protocol --iterations 1000000 --trials 7 --out bench/results/protocol-v2.json
+
+dotnet run --project Bench -c Release --no-build -- \
+  durability --records 5000 --payload 64 --trials 5 --range-queries 100 \
+  --out bench/results/durability-v2.json
 
 dotnet run --project Bench -c Release --no-build -- \
   queue --items 1000000 --capacity 8192 --trials 7 --out bench/results/queue-v2.json
@@ -375,9 +390,7 @@ python3 bench/docgen.py --write
 python3 bench/docgen.py --check
 ```
 
-The pre-v2 transport generation was produced by the sweeps below. Re-running them re-measures that
-whole generation on the current host, which is the only correct way to refresh it — the guard will
-reject a partial refresh that mixes hosts within one generation.
+Refresh the complete pre-v2 generation together; mixed-host partial refreshes are rejected.
 
 ```bash
 python3 bench/environment.py
@@ -400,6 +413,6 @@ for i in 1 2 3; do
 done
 ```
 
-A serious capacity study should reserve hosts, pin processes and interrupts, record frequency and
-thermal state, separate publishers and consumers, inject controlled loss/reordering, capture
-hardware counters, and repeat across x64 and Arm64.
+A capacity study requires reserved hosts, process and interrupt affinity, frequency and thermal
+telemetry, separate publishers and consumers, controlled loss/reordering, hardware counters, and
+x64/Arm64 runs.
