@@ -9,6 +9,8 @@ using System.Net;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using MarketData.Common.Durability;
+using MarketData.Common.Feed;
 
 namespace MarketData.Server
 {
@@ -24,30 +26,52 @@ namespace MarketData.Server
                     new Orderbook(instrument, _service.RegisterProducer(), config.PriceBand, config.Seed));
         }
 
-        /// <summary>
-        /// Selects the dissemination transport. The two are interchangeable behind
-        /// <see cref="IOrderbookService"/>, which is what makes them directly comparable: the
-        /// matching engine above is byte-for-byte the same in both configurations, so a
-        /// measured difference is attributable to the transport and nothing else.
-        /// </summary>
+        /// <summary>Selects gRPC fan-out or multicast without changing the matching path.</summary>
         private IOrderbookService CreateService(ServerConfiguration config)
         {
             if (!config.Multicast.Enabled)
                 return new OrderbookService(config.Port, this, config.VerboseLogging,
                     config.SubscriberQueueCapacity, config.UseRingQueue);
 
-            return new MulticastOrderbookService(
-                IPAddress.Parse(config.Multicast.Group),
-                config.Multicast.Port,
-                IPAddress.Parse(config.Multicast.Interface),
-                config.Multicast.MaxBatch,
-                TimeSpan.FromMilliseconds(config.Multicast.FlushIntervalMs),
-                TimeSpan.FromSeconds(config.Multicast.SnapshotIntervalSeconds),
-                this,
-                string.IsNullOrWhiteSpace(config.Multicast.RedundantGroup)
-                    ? null
-                    : IPAddress.Parse(config.Multicast.RedundantGroup),
-                config.Multicast.RedundantPort);
+            var journal = CreateJournal(config.Multicast.Journal);
+
+            try
+            {
+                return new MulticastOrderbookService(
+                    IPAddress.Parse(config.Multicast.Group),
+                    config.Multicast.Port,
+                    IPAddress.Parse(config.Multicast.Interface),
+                    config.Multicast.MaxBatch,
+                    TimeSpan.FromMilliseconds(config.Multicast.FlushIntervalMs),
+                    TimeSpan.FromSeconds(config.Multicast.SnapshotIntervalSeconds),
+                    this,
+                    string.IsNullOrWhiteSpace(config.Multicast.RedundantGroup)
+                        ? null
+                        : IPAddress.Parse(config.Multicast.RedundantGroup),
+                    config.Multicast.RedundantPort,
+                    journal,
+                    config.Multicast.Journal.RetransmissionPort);
+            }
+            catch
+            {
+                journal?.Dispose();
+                throw;
+            }
+        }
+
+        private static WriteAheadJournal CreateJournal(JournalConfiguration configuration)
+        {
+            if (!configuration.Enabled)
+                return null;
+
+            var sessionId = MulticastPublisher.NewSessionId();
+            var directory = Path.Combine(Path.GetFullPath(configuration.Directory),
+                $"session-{sessionId:X16}");
+            var policy = Enum.Parse<DurabilityPolicy>(configuration.Policy, ignoreCase: true);
+
+            return new WriteAheadJournal(directory, sessionId, policy,
+                configuration.SegmentBytes, TimeSpan.FromMilliseconds(configuration.SyncIntervalMs),
+                initialSequence: 0);
         }
 
         public IReadOnlyCollection<int> InstrumentIds => _orderbooks.Keys;

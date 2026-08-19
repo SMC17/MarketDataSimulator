@@ -49,7 +49,10 @@ cat > "$WORK/multicast.json" <<JSON
 { "Port": 14312, "VerboseLogging": false, "StatisticsIntervalSeconds": 0, "RunForSeconds": 40,
   "Multicast": { "Enabled": true, "Group": "239.7.7.9", "Port": 31009, "Interface": "127.0.0.1",
                  "RedundantGroup": "239.7.7.10", "RedundantPort": 31010,
-                 "MaxBatch": 1, "FlushIntervalMs": 0, "SnapshotIntervalSeconds": 1.0 },
+                 "MaxBatch": 1, "FlushIntervalMs": 0, "SnapshotIntervalSeconds": 1.0,
+                 "Journal": { "Enabled": true, "Directory": "$WORK/journal",
+                   "Policy": "SyncPeriodic", "SegmentBytes": 2097152,
+                   "SyncIntervalMs": 10, "RetransmissionPort": 31011 } },
   "Instruments": [ { "Id": 1, "Symbol": "SMOKE",
     "Specifications": { "Depth": 10, "UpdatesPerSecond": 200, "SnapshotProbability": 0.05 } } ] }
 JSON
@@ -58,6 +61,11 @@ server "$WORK/multicast.json"
     --redundant-group 239.7.7.10 --redundant-port 31010 \
     --subscribers 5 --warmup 2 --duration 4 --out "$WORK/multicast.json.out" )
 stop
+
+if ! find "$WORK/journal" -type f -name 'segment-*.jrn' -size +64c -print -quit | grep -q .; then
+  echo "multicast journal contains no feed packets"
+  exit 1
+fi
 
 python3 - "$WORK/multicast.json.out" <<'PY'
 import json, sys
