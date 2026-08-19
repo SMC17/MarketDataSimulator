@@ -11,7 +11,8 @@ This is a research system, not a production venue. The implemented boundary is e
 
 | Layer | Implementation |
 |---|---|
-| Matching | Single-writer price-time book; limit/market, GTC/IOC/FOK, cancel, reduce |
+| Matching | Price-time book; limit/market/market-to-limit, IOC/FOK/post-only |
+| Risk | Policy gate plus deterministic execution reservations and kill-and-cancel |
 | Price discovery | Price-indexed occupancy bitset with hardware bit scans |
 | Order lookup | Hash index plus intrusive FIFO queues per price |
 | Public depth | Derived from matching events; no second source of truth |
@@ -25,6 +26,23 @@ This is a research system, not a production venue. The implemented boundary is e
 
 The matching engine is single-writer by design. Concurrency sits before and after sequencing, not
 inside the structure that defines event order.
+
+## Order entry contract
+
+- Market-to-limit orders trade only at the opposite touch and rest any remainder there; an empty
+  opposite book rejects them.
+- `GoodTilCrossing` is strict post-only: a crossing order rejects before any state changes.
+- The policy gate enforces entitlement, session, reference-data, rate, credit, and kill controls.
+- The execution ledger reserves worst-case same-side position, quantity, and integer notional before
+  matching; numeric accounts bind one-to-one to authenticated participant identities.
+- Fills release both counterparties' reservations and update signed positions; cancel and reduce
+  require account ownership. The composite path closes policy credit and execution risk together.
+- Strict self-trade prevention rejects only when the incoming quantity would reach the account's
+  own executable liquidity; earlier third-party liquidity is quantity-walked first.
+- Account and global kill switches fail closed and can cancel affected resting orders in sorted-ID
+  order.
+
+These mechanisms do not by themselves establish regulatory compliance or supervisory governance.
 
 ## Feed contract
 
@@ -102,6 +120,11 @@ operation:
 The SPSC ring uses padded monotonic cursors, release/acquire publication, power-of-two indexing, and
 contiguous batch views. Capacity and release bounds fail fast instead of corrupting cursor state.
 
+Execution risk uses an order-ID reservation hash plus per-account/per-instrument directional
+aggregates. Entry, fill, reduce, and cancel are expected O(1); kill-and-cancel sorts the affected
+orders and is O(n + k log k). Opposing open orders are not netted for limit checks. Policy state is
+concurrent; the matching and execution ledgers remain single-writer.
+
 ## Evidence
 
 Release measurements on the checked-in host are observations, not portable constants. Tables below
@@ -113,7 +136,9 @@ are generated from the committed JSON; methodology and raw-artifact boundaries a
 |---|---|---|
 | Feed encode → apply | 121.8 ns median | 0 B/op |
 | Batched SPSC hand-off | 6.3 ns/item median | 0.066 B/item including harness setup |
-| Matching at 100,000 resting orders | 98.7 ns/cycle median | state preserving |
+| Matching at 100,000 resting orders | 103.0 ns/cycle median | state preserving |
+| Risk-gated entry at 100,000 resting orders | 364.5 ns/cycle median | reserve + post-only add + cancel |
+| Full-policy entry at 100,000 resting orders | 560.9 ns/cycle median | policy + execution reservation + book |
 | Committed NASDAQ samples | 39,998 transitions per implementation | exact |
 | Seal + journal feed packet | 813.7 ns median | 0 B/op; OS-buffered acknowledgement |
 | Loopback multicast, 500 subscribers | 485,393 delivered msg/s | 0 gaps; 0 CRC failures |
@@ -190,7 +215,7 @@ Common/Reference  effective-dated instruments and venue sessions
 Common/Lobster    exact integer parser and replay oracle
 Common/Analytics  streaming microstructure statistics
 Common/Simulation virtual-time datagram faults and bounded delivery
-Common/Risk       pre-trade gate, credit, kill switches, entitlements, drop copy, audit
+Common/Risk       policy, execution reservations, entitlements, audit, drop copy, kill switches
 Common/Time       clocks that carry error bounds; CPU and NUMA placement
 Common/Availability epoch fencing, failover, telemetry, SLOs, journal shipping
 Server            deterministic simulator and validated configuration
@@ -210,7 +235,7 @@ Beyond the feed itself, the concerns a venue cannot run without are implemented 
 | Schema governance | Layout fingerprints, mechanical compatibility rules, version negotiation |
 | Reference data | Effective-dated and bitemporal: what was true, and what was known when |
 | Session calendars | Sessions, halts, auctions, shortened days, and the validity that follows |
-| Pre-trade risk | Size, notional, collar, tick/lot, position, credit, and rate, allocation-free |
+| Pre-trade risk | Policy checks, exact directional reservations, ownership, and strict STP |
 | Kill switches | Per-participant and global, with no automatic re-arm |
 | Entitlements | Per-participant, per-instrument, gating both data and trading |
 | Drop copy | Private per-participant stream, isolation asserted by test |
@@ -222,21 +247,17 @@ Beyond the feed itself, the concerns a venue cannot run without are implemented 
 
 ### What is still outside the boundary
 
-Stated as plainly as the list above, because a boundary that quietly moves is worse than one that
-stays put:
-
-- **Epoch allocation needs real consensus.** Fencing is only as good as the uniqueness of the
-  token, and that cannot be produced locally. The interface is explicit and the in-memory
-  implementation is correct for one process; a deployment needs etcd, ZooKeeper, or an equivalent.
-- **Quorum commit is not implemented.** Replication here is journal shipping, so a failover loses
-  whatever had not been shipped — measured and reported, not assumed to be zero.
-- **PTP, hardware timestamps, and kernel bypass are unmeasured.** They need a grandmaster, NIC
-  support, and privileges this environment does not have. The clock interface admits error so they
-  slot in, and nothing claims a precision that was not measured.
-- **CPU pinning is implemented and was found not to be justified here** — zero migrations, one NUMA
-  node, and a difference inside run-to-run noise. Recorded rather than adopted.
-- **Authenticated transport** for the live and recovery channels, and cross-site archival, remain
-  genuinely absent.
+- **Consensus-backed epochs and quorum commit.** The in-memory epoch allocator demonstrates fencing;
+  journal shipping has a measured, nonzero RPO.
+- **Authenticated transport and identity provisioning.** Live/recovery authentication and binding
+  authenticated sessions to numeric execution accounts are not implemented.
+- **Cross-site archive and cross-venue credit.** Both require external infrastructure and policy.
+- **Mandatory audit/drop-copy wiring and configurable STP.** The components exist; every order path
+  is not yet forced through them, and STP currently uses strict reject only.
+- **PTP, hardware timestamps, and kernel bypass.** The clock model admits uncertainty, but these
+  require hardware and privileges unavailable on the benchmark host.
+- **CPU pinning.** Implemented and measured; zero migrations and one NUMA node left the result inside
+  run-to-run noise, so it is not enabled by default.
 
 Those are explicit next boundaries, not implications of a low local benchmark number.
 
@@ -252,3 +273,4 @@ Those are explicit next boundaries, not implications of a low local benchmark nu
 | [Dan Luu: fsync failures](https://danluu.com/fsyncgate/) and [Mechanical Sympathy: false sharing](https://mechanical-sympathy.blogspot.com/2011/07/) | failure-specific durability claims and padded hand-off cursors |
 | [HRT: devirtualisation](https://www.hudsonrivertrading.com/hrtbeat/optimising-compiler-performance-a-case-for-devirtualisation/) and [thenumb.at: open addressing](https://thenumb.at/Hashtables/) | compiler-visible hot paths and cache-coherent indexing |
 | [Aeron Archive](https://aeron.io/docs/aeron-archive/overview/) and [Two Sigma metrics](https://www.twosigma.com/articles/building-a-high-throughput-metrics-system-using-open-source-software/) | position-based replay and measurement-led requirements |
+| [SEC Rule 15c3-5](https://www.sec.gov/files/rules/final/2010/34-63241-secg.htm) and [CME order types](https://www.cmegroup.com/education/courses/things-to-know-before-trading-cme-futures/futures-order-types) | pre-set exposure controls and touch-bounded market-to-limit semantics |

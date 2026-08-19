@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using MarketData.Common.Books;
 
 namespace MarketData.Common.Risk
@@ -37,11 +38,13 @@ namespace MarketData.Common.Risk
     {
         private readonly ConcurrentDictionary<string, List<Action<DropCopyEvent>>> _subscribers = new();
         private readonly PreTradeRiskGate _gate;
+        private long _published;
+        private long _suppressed;
 
         public DropCopyService(PreTradeRiskGate gate = null) => _gate = gate;
 
-        public long Published { get; private set; }
-        public long Suppressed { get; private set; }
+        public long Published => Interlocked.Read(ref _published);
+        public long Suppressed => Interlocked.Read(ref _suppressed);
 
         /// <summary>
         /// Subscribes to one participant's own stream.
@@ -57,14 +60,8 @@ namespace MarketData.Common.Risk
             ArgumentNullException.ThrowIfNull(handler);
 
             if (_gate is not null && !_gate.IsEntitled(participantId, 0, Entitlement.DropCopy))
-            {
-                // Instrument 0 is the blanket grant; a per-instrument grant is checked at delivery.
-                var anyInstrument = _gate.EntitlementFor(participantId, 0);
-
-                if ((anyInstrument & Entitlement.DropCopy) != Entitlement.DropCopy)
-                    throw new InvalidOperationException(
-                        $"{participantId} is not entitled to a drop copy.");
-            }
+                throw new InvalidOperationException(
+                    $"{participantId} is not entitled to a drop copy.");
 
             var handlers = _subscribers.GetOrAdd(participantId, _ => new List<Action<DropCopyEvent>>());
 
@@ -76,9 +73,17 @@ namespace MarketData.Common.Risk
 
         public void Publish(in DropCopyEvent copy)
         {
+            if (string.IsNullOrEmpty(copy.ParticipantId) ||
+                (_gate is not null &&
+                 !_gate.IsEntitled(copy.ParticipantId, copy.InstrumentId, Entitlement.DropCopy)))
+            {
+                Interlocked.Increment(ref _suppressed);
+                return;
+            }
+
             if (!_subscribers.TryGetValue(copy.ParticipantId, out var handlers))
             {
-                Suppressed++;
+                Interlocked.Increment(ref _suppressed);
                 return;
             }
 
@@ -90,7 +95,7 @@ namespace MarketData.Common.Risk
             foreach (var handler in snapshot)
                 handler(copy);
 
-            Published++;
+            Interlocked.Increment(ref _published);
         }
 
         private void Unsubscribe(string participantId, Action<DropCopyEvent> handler)

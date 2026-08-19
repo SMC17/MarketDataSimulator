@@ -2,7 +2,7 @@ using System;
 
 namespace MarketData.Common.Risk
 {
-    /// <summary>Why an order was refused. Ordered by the sequence checks run in.</summary>
+    /// <summary>Stable reason codes for policy and execution-risk rejection.</summary>
     public enum RiskRejectReason : byte
     {
         None = 0,
@@ -42,6 +42,27 @@ namespace MarketData.Common.Risk
 
         /// <summary>Would trade against the participant's own resting order.</summary>
         SelfTrade,
+
+        /// <summary>The request is structurally invalid or its risk value cannot be represented.</summary>
+        InvalidOrder,
+
+        /// <summary>The sequencer-local account has no execution-risk configuration.</summary>
+        UnknownAccount,
+
+        /// <summary>An active order already owns this venue order id.</summary>
+        DuplicateOrderId,
+
+        /// <summary>Aggregate open quantity would exceed its execution limit.</summary>
+        OpenQuantityExceeded,
+
+        /// <summary>Aggregate open notional would exceed its execution limit.</summary>
+        OpenNotionalExceeded,
+
+        /// <summary>The account already has the maximum permitted active orders.</summary>
+        ActiveOrderLimitExceeded,
+
+        /// <summary>A checked risk calculation could not be represented.</summary>
+        ArithmeticOverflow,
     }
 
     /// <summary>The outcome of the pre-trade gate.</summary>

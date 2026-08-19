@@ -122,6 +122,87 @@ namespace MarketData.Tests
         }
 
         [Fact]
+        public void MarketToLimitTradesOnlyAtTheTouchAndRestsThere()
+        {
+            var book = NewBook();
+            Rest(book, 1, Side.Ask, 10, 40);
+            Rest(book, 2, Side.Ask, 11, 100);
+
+            var events = Events();
+            var result = book.Submit(3, Side.Bid, OrderType.MarketToLimit,
+                TimeInForce.GoodTilCancel, 0, 100, events);
+
+            Assert.False(result.Rejected);
+            Assert.Equal(40u, result.FilledQuantity);
+            Assert.Equal(60u, result.RestingQuantity);
+            Assert.Equal(new[] { 10 }, events.Where(e => e.Type == MarketEventType.Traded)
+                .Select(e => e.Price));
+            Assert.Equal(10, book.Find(3)?.Price);
+            Assert.True(book.TryGetBest(Side.Ask, out var ask, out var askQuantity));
+            Assert.Equal(11, ask);
+            Assert.Equal(100UL, askQuantity);
+        }
+
+        [Fact]
+        public void MarketToLimitRejectsAnEmptyOppositeBook()
+        {
+            var book = NewBook();
+            var events = Events();
+
+            var result = book.Submit(1, Side.Bid, OrderType.MarketToLimit,
+                TimeInForce.GoodTilCancel, 0, 100, events);
+
+            Assert.True(result.Rejected);
+            Assert.Equal(0, book.OrderCount);
+            Assert.Single(events, e => e.Type == MarketEventType.Rejected);
+        }
+
+        [Fact]
+        public void GoodTilCrossingNeverTakesLiquidity()
+        {
+            var book = NewBook();
+            Rest(book, 1, Side.Ask, 10, 40);
+
+            var crossingEvents = Events();
+            var crossing = book.Submit(2, Side.Bid, OrderType.Limit,
+                TimeInForce.GoodTilCrossing, 10, 100, crossingEvents);
+
+            Assert.True(crossing.Rejected);
+            Assert.DoesNotContain(crossingEvents, e => e.Type == MarketEventType.Traded);
+            Assert.Equal(40u, book.Find(1)?.Remaining);
+
+            var passive = book.Submit(3, Side.Bid, OrderType.Limit,
+                TimeInForce.GoodTilCrossing, 9, 100, Events());
+
+            Assert.False(passive.Rejected);
+            Assert.Equal(100u, passive.RestingQuantity);
+            Assert.Equal(9, book.Find(3)?.Price);
+        }
+
+        [Fact]
+        public void InvalidOrderInstructionsRejectWithoutMutatingTheBook()
+        {
+            var book = NewBook();
+            Rest(book, 1, Side.Ask, 10, 40);
+
+            Assert.True(book.Submit(0, Side.Bid, OrderType.Limit,
+                TimeInForce.GoodTilCancel, 9, 10, Events()).Rejected);
+            Assert.True(book.Submit(2, Side.Bid, OrderType.MarketToLimit,
+                TimeInForce.ImmediateOrCancel, 0, 10, Events()).Rejected);
+            Assert.True(book.Submit(3, Side.Bid, OrderType.Market,
+                TimeInForce.GoodTilCrossing, 0, 10, Events()).Rejected);
+            Assert.True(book.Submit(4, (Side)byte.MaxValue, OrderType.Limit,
+                TimeInForce.GoodTilCancel, 9, 10, Events()).Rejected);
+            Assert.True(book.Submit(5, Side.Bid, (OrderType)byte.MaxValue,
+                TimeInForce.GoodTilCancel, 9, 10, Events()).Rejected);
+            Assert.True(book.Submit(6, Side.Bid, OrderType.Limit,
+                (TimeInForce)byte.MaxValue, 9, 10, Events()).Rejected);
+
+            Assert.Equal(1, book.OrderCount);
+            Assert.Equal(40u, book.Find(1)?.Remaining);
+        }
+
+        [Fact]
         public void ImmediateOrCancelTakesWhatItCanAndLeavesNothing()
         {
             var book = NewBook();
@@ -332,13 +413,22 @@ namespace MarketData.Tests
                         else
                         {
                             var side = random.Next(2) == 0 ? Side.Bid : Side.Ask;
-                            var type = random.NextDouble() < 0.12 ? OrderType.Market : OrderType.Limit;
-                            var tif = random.NextDouble() switch
+                            var typeRoll = random.NextDouble();
+                            var type = typeRoll switch
                             {
-                                < 0.10 => TimeInForce.ImmediateOrCancel,
-                                < 0.16 => TimeInForce.FillOrKill,
-                                _ => TimeInForce.GoodTilCancel,
+                                < 0.08 => OrderType.Market,
+                                < 0.14 => OrderType.MarketToLimit,
+                                _ => OrderType.Limit,
                             };
+                            var tif = type == OrderType.MarketToLimit
+                                ? TimeInForce.GoodTilCancel
+                                : random.NextDouble() switch
+                                {
+                                    < 0.10 => TimeInForce.ImmediateOrCancel,
+                                    < 0.16 => TimeInForce.FillOrKill,
+                                    < 0.24 when type == OrderType.Limit => TimeInForce.GoodTilCrossing,
+                                    _ => TimeInForce.GoodTilCancel,
+                                };
                             var price = random.Next(MinPrice, MaxPrice + 1);
                             var quantity = (uint)random.Next(1, 300);
                             var id = nextId++;
