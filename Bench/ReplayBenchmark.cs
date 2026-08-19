@@ -33,29 +33,47 @@ namespace MarketData.Bench
                 }
             }
 
-            var messagePath = Directory.GetFiles(directory, "*message*.csv").FirstOrDefault();
-            var referencePath = Directory.GetFiles(directory, "*orderbook*.csv").FirstOrDefault();
+            var sessions = LobsterSessions.Discover(directory);
 
-            if (messagePath is null || referencePath is null)
+            if (sessions.Count == 0)
             {
-                Console.Error.WriteLine($"No LOBSTER message/orderbook pair found in '{directory}'.");
+                Console.Error.WriteLine($"No LOBSTER message/orderbook pairs found in '{directory}'.");
                 Console.Error.WriteLine("Run scripts/fetch-lobster.sh first.");
                 return 2;
             }
 
-            Console.WriteLine($"Messages : {Path.GetFileName(messagePath)} ({new FileInfo(messagePath).Length / 1024.0 / 1024.0:F1} MiB)");
-            Console.WriteLine($"Reference: {Path.GetFileName(referencePath)} ({new FileInfo(referencePath).Length / 1024.0 / 1024.0:F1} MiB)");
+            var allExact = true;
 
+            foreach (var session in sessions)
+            {
+                if (!RunSession(session, warmup, trials, outputPath, ref allExact))
+                    allExact = false;
+            }
+
+            return allExact ? 0 : 1;
+        }
+
+        private static bool RunSession(LobsterSession session, int warmup, int trials, string outputPath, ref bool allExact)
+        {
+            var messagePath = session.MessagePath;
+            var referencePath = session.ReferencePath;
+
+            Console.WriteLine();
+            Console.WriteLine(new string('=', 92));
+            Console.WriteLine($"{session}");
+            Console.WriteLine(new string('=', 92));
             var messages = File.ReadAllBytes(messagePath);
             var reference = File.ReadAllBytes(referencePath);
 
             var (minPrice, maxPrice, count) = Survey(messages);
+            var levels = LobsterReplay.DetectLevels(reference);
             var (referenceMin, referenceMax) = SurveyReference(reference);
             minPrice = Math.Min(minPrice, referenceMin);
             maxPrice = Math.Max(maxPrice, referenceMax);
             Console.WriteLine($"Messages : {count:N0}   price band [{minPrice:N0}, {maxPrice:N0}] " +
                               $"({(maxPrice - minPrice) / 10000.0:F2} dollars)");
             Console.WriteLine($"Warm-up  : {warmup:N0} messages before comparison begins");
+            Console.WriteLine($"Depth    : {levels} levels published per side");
             Console.WriteLine();
 
             // Padded so a level can never fall outside the ladder's band.
@@ -142,7 +160,7 @@ namespace MarketData.Bench
 
             var depthCurve = new List<DepthPoint>();
 
-            for (var k = 0; k < LobsterReplay.LevelsInReference; k++)
+            for (var k = 0; k < levels; k++)
             {
                 var matched = bestByImplementation[0].MatchedByDepth[k];
                 var share = bestByImplementation[0].RowsCompared == 0
@@ -169,27 +187,34 @@ namespace MarketData.Bench
 
             if (outputPath is not null)
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-                File.WriteAllText(outputPath, JsonSerializer.Serialize(
+                var full = Path.GetFullPath(outputPath);
+                var perSession = Path.Combine(Path.GetDirectoryName(full),
+                    $"{Path.GetFileNameWithoutExtension(full)}-{session.Symbol}{Path.GetExtension(full)}");
+
+                Directory.CreateDirectory(Path.GetDirectoryName(full));
+                File.WriteAllText(perSession, JsonSerializer.Serialize(
                     new
                     {
+                        Session = session.ToString(),
+                        Symbol = session.Symbol,
+                        Levels = session.Levels,
                         Transitions = transitionReports,
                         Cumulative = results,
                         CumulativeAccuracyByDepth = depthCurve,
                         Parser = parseRate,
                     },
                     new JsonSerializerOptions { WriteIndented = true }));
-                Console.WriteLine($"Wrote {outputPath}");
+                Console.WriteLine($"Wrote {perSession}");
             }
 
-            return transitionReports.All(r => r.RowsMatched == r.RowsCompared) ? 0 : 1;
+            return transitionReports.All(r => r.RowsMatched == r.RowsCompared);
         }
 
         /// <summary>Price extremes in the reference book, which the seed must be able to represent.</summary>
         private static (int Min, int Max) SurveyReference(ReadOnlySpan<byte> reference)
         {
             var reader = new LobsterReader(reference);
-            Span<int> row = stackalloc int[LobsterReplay.LevelsInReference * 4];
+            Span<int> row = stackalloc int[LobsterReplay.MaxLevels * 4];
             var min = int.MaxValue;
             var max = int.MinValue;
 
