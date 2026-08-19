@@ -5,7 +5,7 @@ around falsifiable invariants: price-time priority, exact replay, explicit stale
 memory, wire integrity, and measured allocation.
 
 This is a research system, not a production venue. The implemented boundary is explicit; see
-[Production boundary](#production-boundary).
+[Operational surface](#operational-surface).
 
 ## System
 
@@ -190,24 +190,53 @@ Common/Reference  effective-dated instruments and venue sessions
 Common/Lobster    exact integer parser and replay oracle
 Common/Analytics  streaming microstructure statistics
 Common/Simulation virtual-time datagram faults and bounded delivery
+Common/Risk       pre-trade gate, credit, kill switches, entitlements, drop copy, audit
+Common/Time       clocks that carry error bounds; CPU and NUMA placement
+Common/Availability epoch fencing, failover, telemetry, SLOs, journal shipping
 Server            deterministic simulator and validated configuration
-Bench             protocol, matching, queue, replay, and transport harnesses
+Bench             protocol, matching, queue, replay, timing, and transport harnesses
 Tests             deterministic, adversarial, differential, and real-data tests
 ```
 
-## Production boundary
+## Operational surface
 
-A venue or trading platform would still require:
+Beyond the feed itself, the concerns a venue cannot run without are implemented and tested here:
 
-- a replicated and fenced sequencer, quorum commit, deterministic takeover, and cross-site archive;
-- retention policy, sequencer-thread checkpoints, directory-metadata durability, and repair tooling;
-- runtime schema negotiation, controlled rollout, and authoritative reference-data distribution;
-- pre-trade risk, credit limits, kill switches, drop copy, audit retention, and authenticated
-  entitlements for live and recovery channels;
-- PTP-synchronized clocks with uncertainty, hardware timestamps, CPU/NUMA affinity, and NIC/kernel
-  bypass where measurements justify them;
-- redundant hosts and sites, deterministic failover, SLOs, telemetry, chaos drills, and disaster
-  recovery.
+| Concern | Implementation |
+|---|---|
+| Durability | Segmented CRC-32C write-ahead log; torn tails distinguished from corruption |
+| Recovery | Checkpoints bound replay; segments below a checkpoint are skipped, not rescanned |
+| Gap fill | TCP retransmission off the journal, refusing ranges better served by a snapshot |
+| Schema governance | Layout fingerprints, mechanical compatibility rules, version negotiation |
+| Reference data | Effective-dated and bitemporal: what was true, and what was known when |
+| Session calendars | Sessions, halts, auctions, shortened days, and the validity that follows |
+| Pre-trade risk | Size, notional, collar, tick/lot, position, credit, and rate, allocation-free |
+| Kill switches | Per-participant and global, with no automatic re-arm |
+| Entitlements | Per-participant, per-instrument, gating both data and trading |
+| Drop copy | Private per-participant stream, isolation asserted by test |
+| Audit | On the same journal as market data, so one sequence orders both |
+| Time | Instants carry an error bound; ordering returns indeterminate when bars overlap |
+| Failover | Epoch fencing against split brain, plus a catch-up bar against reissued sequences |
+| SLOs | Error budgets and burn rates rather than a met/missed flag |
+| Disaster recovery | Segment shipping with measured RPO and RTO, verified by drill |
+
+### What is still outside the boundary
+
+Stated as plainly as the list above, because a boundary that quietly moves is worse than one that
+stays put:
+
+- **Epoch allocation needs real consensus.** Fencing is only as good as the uniqueness of the
+  token, and that cannot be produced locally. The interface is explicit and the in-memory
+  implementation is correct for one process; a deployment needs etcd, ZooKeeper, or an equivalent.
+- **Quorum commit is not implemented.** Replication here is journal shipping, so a failover loses
+  whatever had not been shipped — measured and reported, not assumed to be zero.
+- **PTP, hardware timestamps, and kernel bypass are unmeasured.** They need a grandmaster, NIC
+  support, and privileges this environment does not have. The clock interface admits error so they
+  slot in, and nothing claims a precision that was not measured.
+- **CPU pinning is implemented and was found not to be justified here** — zero migrations, one NUMA
+  node, and a difference inside run-to-run noise. Recorded rather than adopted.
+- **Authenticated transport** for the live and recovery channels, and cross-site archival, remain
+  genuinely absent.
 
 Those are explicit next boundaries, not implications of a low local benchmark number.
 
