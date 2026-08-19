@@ -295,7 +295,13 @@ namespace MarketData.Common.Durability
     public sealed record RetransmissionResponse(RetransmissionStatus Status, ulong SessionId,
         List<SequencedPayload> Messages);
 
-    public sealed class RetransmissionClient
+    public interface IRetransmissionClient
+    {
+        Task<RetransmissionResponse> RequestDetailedAsync(ulong sessionId, ulong from, ulong to,
+            CancellationToken token = default);
+    }
+
+    public sealed class RetransmissionClient : IRetransmissionClient
     {
         private readonly IPEndPoint _endpoint;
 
