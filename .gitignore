@@ -369,3 +369,6 @@ bench/configs/
 # Full LOBSTER session (~71 MiB), fetched by scripts/fetch-lobster.sh.
 # A 20k-message slice is committed under data/sample/ for the test suite.
 data/lobster/
+
+# Agent worktrees and local harness state.
+.claude/

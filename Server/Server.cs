@@ -20,7 +20,7 @@ namespace MarketData.Server
             _service = CreateService(config);
 
             foreach (var instrument in config.Instruments)
-                _orderbooks.Add(instrument.Id, new Orderbook(instrument, _service, config.BookImplementation, config.PriceBand));
+                _orderbooks.Add(instrument.Id, new Orderbook(instrument, _service.RegisterProducer(), config.BookImplementation, config.PriceBand));
         }
 
         /// <summary>
@@ -32,7 +32,7 @@ namespace MarketData.Server
         private IOrderbookService CreateService(ServerConfiguration config)
         {
             if (!config.Multicast.Enabled)
-                return new OrderbookService(config.Port, this, config.VerboseLogging, config.SubscriberQueueCapacity);
+                return new OrderbookService(config.Port, this, config.VerboseLogging, config.SubscriberQueueCapacity, config.UseRingQueue);
 
             return new MulticastOrderbookService(
                 IPAddress.Parse(config.Multicast.Group),
@@ -54,7 +54,7 @@ namespace MarketData.Server
                 (_config.Multicast.Enabled
                     ? $"Publishing to multicast {_config.Multicast.Group}:{_config.Multicast.Port} " +
                       $"(batch {_config.Multicast.MaxBatch}, snapshot every {_config.Multicast.SnapshotIntervalSeconds}s)"
-                    : $"Listening on {_config.Port}")
+                    : $"Listening on {_config.Port} ({(_config.UseRingQueue ? "ring" : "channel")} queue)")
                 + " | instruments: " + string.Join(", ",
                 _config.Instruments.Select(i => $"{i.Symbol}(depth {i.Specifications.Depth}, {i.Specifications.UpdatesPerSecond:0.##}/s)"))
                 + $" | book: {_config.BookImplementation}");
