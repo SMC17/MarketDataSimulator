@@ -42,6 +42,13 @@ namespace MarketData.Common.Risk
     /// log, one order, one CRC.
     /// </para>
     /// <para>
+    /// An audit event carries the sequence of the last durable message rather than one of its own,
+    /// so it reads as "at this point in the stream, this decision was made". That is both the more
+    /// useful statement and the only one the journal will accept: sequence numbers belong to the
+    /// message stream, and an annotation that consumed them would leave gaps subscribers would
+    /// report as loss.
+    /// </para>
+    /// <para>
     /// Retention is by policy and enforced by deletion of whole segments, never by rewriting. An
     /// audit log that can be edited in place is not one.
     /// </para>
@@ -49,13 +56,9 @@ namespace MarketData.Common.Risk
     public sealed class AuditLog
     {
         private readonly WriteAheadJournal _journal;
-        private readonly Sequencer _sequencer;
 
-        public AuditLog(WriteAheadJournal journal, Sequencer sequencer)
-        {
-            _journal = journal ?? throw new ArgumentNullException(nameof(journal));
-            _sequencer = sequencer ?? throw new ArgumentNullException(nameof(sequencer));
-        }
+        public AuditLog(WriteAheadJournal journal)
+            => _journal = journal ?? throw new ArgumentNullException(nameof(journal));
 
         public long EventsWritten { get; private set; }
 
@@ -82,7 +85,12 @@ namespace MarketData.Common.Risk
                 span[22] = (byte)nameBytes;
                 Encoding.UTF8.GetBytes(participant, span.Slice(23));
 
-                var sequence = _sequencer.Next();
+                // An audit event annotates a point in the message stream; it does not occupy one.
+                // Taking its own number from a separate sequencer - which an earlier version did -
+                // both inflates the message sequence space and produces audit records pointing at
+                // sequences that never existed. The journal rejects that outright, and is right to.
+                var sequence = _journal.LastSequence;
+
                 _journal.Append(JournalRecordType.Audit, sequence, DateTime.UtcNow.Ticks, span);
                 EventsWritten++;
 
