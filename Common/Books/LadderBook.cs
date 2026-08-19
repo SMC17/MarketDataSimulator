@@ -45,36 +45,27 @@ namespace MarketData.Common.Books
             MaxPrice = maxPrice;
 
             _band = maxPrice - minPrice + 1;
-            var words = (_band + 63) >> 6;
+            _index = new PriceIndex(_band);
 
             _quantities = new uint[2][];
-            _occupancy = new ulong[2][];
 
             for (var side = 0; side < 2; side++)
-            {
                 _quantities[side] = new uint[_band];
-                _occupancy[side] = new ulong[words];
-            }
-
-            _counts = new int[2];
-            _touch = new int[2] { Empty, Empty };
-            _tail = new int[2] { Empty, Empty };
         }
 
-        public int Count(Side side) => _counts[(int)side];
+        public int Count(Side side) => _index.Count(side);
 
         public bool TryGetBest(Side side, out PriceLevel level)
         {
-            var index = (int)side;
+            var slot = _index.Touch(side);
 
-            if (_counts[index] == 0)
+            if (slot == PriceIndex.None)
             {
                 level = default;
                 return false;
             }
 
-            var slot = TouchSlot(side);
-            level = new PriceLevel(slot + MinPrice, _quantities[index][slot]);
+            level = new PriceLevel(slot + MinPrice, _quantities[(int)side][slot]);
             return true;
         }
 
@@ -86,7 +77,7 @@ namespace MarketData.Common.Books
             var slot = ToSlot(price);
             var index = (int)side;
 
-            if (IsSet(_occupancy[index], slot))
+            if (_index.IsOccupied(side, slot))
             {
                 if (_quantities[index][slot] == quantity)
                     return false;
@@ -95,74 +86,48 @@ namespace MarketData.Common.Books
                 return true;
             }
 
-            if (_counts[index] == Depth)
+            if (_index.Count(side) == Depth)
             {
-                var tail = TailSlot(side);
-
                 // Worse than everything displayed: outside the window, so not a change.
-                if (!IsBetterSlot(side, slot, tail))
+                if (!PriceIndex.IsBetter(side, slot, _index.Tail(side)))
                     return false;
 
-                RemoveAt(index, tail);
+                RemoveAt(side, _index.Tail(side));
             }
 
             _quantities[index][slot] = quantity;
-            Set(_occupancy[index], slot);
-            var count = ++_counts[index];
-
-            if (count == 1)
-            {
-                _touch[index] = slot;
-                _tail[index] = slot;
-                return true;
-            }
-
-            // Refine only caches that are still valid. Empty means "invalidated, recompute on
-            // demand", not "no levels" - adopting the new slot from an invalidated cache would
-            // claim a level is the touch or the tail without having looked at the rest of the
-            // side, which silently corrupts the depth cap.
-            if (_touch[index] != Empty && IsBetterSlot(side, slot, _touch[index]))
-                _touch[index] = slot;
-
-            if (_tail[index] != Empty && IsBetterSlot(side, _tail[index], slot))
-                _tail[index] = slot;
-
+            _index.Occupy(side, slot);
             return true;
         }
 
         public bool Remove(Side side, int price)
         {
             var slot = ToSlot(price);
-            var index = (int)side;
 
-            if (!IsSet(_occupancy[index], slot))
+            if (!_index.IsOccupied(side, slot))
                 return false;
 
-            RemoveAt(index, slot);
+            RemoveAt(side, slot);
             return true;
         }
 
         public int CopyTo(Side side, Span<PriceLevel> destination)
         {
-            var index = (int)side;
-            var remaining = Math.Min(_counts[index], destination.Length);
+            var remaining = Math.Min(_index.Count(side), destination.Length);
 
             if (remaining == 0)
                 return 0;
 
-            var quantities = _quantities[index];
-            var occupancy = _occupancy[index];
+            var quantities = _quantities[(int)side];
             var written = 0;
-            var slot = TouchSlot(side);
+            var slot = _index.Touch(side);
 
             // Walk occupied slots outwards from the touch. Each step is a bit-scan, so the cost is
             // proportional to the band actually spanned rather than to the whole band.
-            while (written < remaining && slot != Empty)
+            while (written < remaining && slot != PriceIndex.None)
             {
                 destination[written++] = new PriceLevel(slot + MinPrice, quantities[slot]);
-                slot = side == Side.Bid
-                    ? PreviousSet(occupancy, slot - 1)
-                    : NextSet(occupancy, slot + 1, _band);
+                slot = _index.Outward(side, slot);
             }
 
             return written;
@@ -170,63 +135,17 @@ namespace MarketData.Common.Books
 
         public void Clear()
         {
+            _index.Clear();
+
             for (var side = 0; side < 2; side++)
-            {
                 Array.Clear(_quantities[side], 0, _quantities[side].Length);
-                Array.Clear(_occupancy[side], 0, _occupancy[side].Length);
-                _counts[side] = 0;
-                _touch[side] = Empty;
-                _tail[side] = Empty;
-            }
         }
 
-        private void RemoveAt(int index, int slot)
+        private void RemoveAt(Side side, int slot)
         {
-            Unset(_occupancy[index], slot);
-            _quantities[index][slot] = 0;
-            _counts[index]--;
-
-            // Only the cached endpoints need invalidating; they are recomputed lazily on demand.
-            if (_touch[index] == slot)
-                _touch[index] = Empty;
-
-            if (_tail[index] == slot)
-                _tail[index] = Empty;
+            _index.Vacate(side, slot);
+            _quantities[(int)side][slot] = 0;
         }
-
-        private int TouchSlot(Side side)
-        {
-            var index = (int)side;
-            var cached = _touch[index];
-
-            if (cached != Empty)
-                return cached;
-
-            var occupancy = _occupancy[index];
-            var slot = side == Side.Bid ? PreviousSet(occupancy, _band - 1) : NextSet(occupancy, 0, _band);
-
-            _touch[index] = slot;
-            return slot;
-        }
-
-        private int TailSlot(Side side)
-        {
-            var index = (int)side;
-            var cached = _tail[index];
-
-            if (cached != Empty)
-                return cached;
-
-            var occupancy = _occupancy[index];
-            var slot = side == Side.Bid ? NextSet(occupancy, 0, _band) : PreviousSet(occupancy, _band - 1);
-
-            _tail[index] = slot;
-            return slot;
-        }
-
-        /// <summary>True when <paramref name="candidate"/> is closer to the touch than <paramref name="incumbent"/>.</summary>
-        private static bool IsBetterSlot(Side side, int candidate, int incumbent)
-            => side == Side.Bid ? candidate > incumbent : candidate < incumbent;
 
         private int ToSlot(int price)
         {
@@ -239,63 +158,8 @@ namespace MarketData.Common.Books
             return price - MinPrice;
         }
 
-        private static bool IsSet(ulong[] bits, int slot) => (bits[slot >> 6] & (1UL << (slot & 63))) != 0;
-        private static void Set(ulong[] bits, int slot) => bits[slot >> 6] |= 1UL << (slot & 63);
-        private static void Unset(ulong[] bits, int slot) => bits[slot >> 6] &= ~(1UL << (slot & 63));
-
-        /// <summary>Lowest set bit at or above <paramref name="from"/>, or <see cref="Empty"/>.</summary>
-        private static int NextSet(ulong[] bits, int from, int band)
-        {
-            if (from >= band)
-                return Empty;
-
-            var word = from >> 6;
-            var masked = bits[word] & (ulong.MaxValue << (from & 63));
-
-            while (true)
-            {
-                if (masked != 0)
-                {
-                    var slot = (word << 6) + BitOperations.TrailingZeroCount(masked);
-                    return slot < band ? slot : Empty;
-                }
-
-                if (++word >= bits.Length)
-                    return Empty;
-
-                masked = bits[word];
-            }
-        }
-
-        /// <summary>Highest set bit at or below <paramref name="from"/>, or <see cref="Empty"/>.</summary>
-        private static int PreviousSet(ulong[] bits, int from)
-        {
-            if (from < 0)
-                return Empty;
-
-            var word = from >> 6;
-            var shift = 63 - (from & 63);
-            var masked = bits[word] & (ulong.MaxValue >> shift);
-
-            while (true)
-            {
-                if (masked != 0)
-                    return (word << 6) + (63 - BitOperations.LeadingZeroCount(masked));
-
-                if (--word < 0)
-                    return Empty;
-
-                masked = bits[word];
-            }
-        }
-
-        private const int Empty = -1;
-
         private readonly int _band;
+        private readonly PriceIndex _index;
         private readonly uint[][] _quantities;
-        private readonly ulong[][] _occupancy;
-        private readonly int[] _counts;
-        private readonly int[] _touch;
-        private readonly int[] _tail;
     }
 }

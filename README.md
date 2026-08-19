@@ -61,7 +61,8 @@ validity are in **[BENCHMARKS.md](BENCHMARKS.md)**.
 ## What is in here
 
 ```
-Common/Books/     Three order book implementations behind one interface
+Common/Matching/  Order-by-order book, price-time matching, depth projection
+Common/Books/     Three aggregated book implementations behind one interface
 Common/Feed/      Binary wire format, multicast publisher, decoder
 Common/Server/    Unicast (gRPC) and multicast dissemination services
 Server/           The simulated matching engine and its configuration
@@ -70,6 +71,43 @@ Bench/            Load generator, latency histogram, order book micro-benchmark
 Tests/            Property-based and differential test suite
 bench/            Sweep runners and raw results
 ```
+
+### Matching engine
+
+The feed is the output of a real matching engine, not a random walk over price levels. Orders
+arrive, rest, cancel and trade under **price-time priority**, and the depth feed is *derived* from
+the resulting order-by-order events — one source of truth, so a subscriber applying the depth feed
+necessarily agrees with the engine's book.
+
+The book is the canonical structure for this job, three parts each covering what the others are bad
+at:
+
+| Structure | Covers | Cost |
+|---|---|---|
+| Hash map: order id → order | Cancel, the operation real flow is mostly made of | O(1) |
+| Intrusive doubly-linked FIFO per price | Time priority within a level | O(1) unlink |
+| Bitset price index + hardware bit-scan | Finding the touch to match against | O(1) amortised |
+
+Add, cancel and reduce are O(1); matching is linear only in the number of orders actually filled,
+never in the size of the book. Limit and market orders, GTC/IOC/FOK, and reduce-in-place that keeps
+queue position (growing does not — that would let a participant reserve priority cheaply).
+
+Measured, 200k operations, minimum of 5 trials:
+
+| Resting orders | Add | Cancel | Match | Mixed (60/35/5) |
+|---|---|---|---|---|
+| 1,000 | 57.3 ns | **55.8 ns** | 100.9 ns | 70.1 ns |
+| 10,000 | 51.1 ns | **57.9 ns** | 103.7 ns | 75.4 ns |
+| 1,000,000 | 48.7 ns | 158.7 ns | 127.6 ns | 414.7 ns |
+
+Cancel is flat from 1k to 10k orders and then climbs — the algorithm didn't change, the working set
+outgrew the cache. That knee is the interesting part, and it's discussed in
+[BENCHMARKS.md](BENCHMARKS.md).
+
+**Steady state allocates exactly zero bytes** — asserted, not hoped for. `AllocationTests` warms the
+pools then requires 0 bytes across 200,000 iterations of matching, cancelling, publishing depth and
+encoding the wire format. Orders and price levels are pooled, because GC pauses in a matching path
+land at the worst possible moment.
 
 ### Order books
 
@@ -126,7 +164,7 @@ which turns silent loss into detectable loss, and the consumer:
 
 ### Testing
 
-61 tests, all deterministic and seeded. The interesting ones are not unit tests:
+82 tests, all deterministic and seeded. The interesting ones are not unit tests:
 
 - **Differential testing** — random operation streams are applied to all three
   book implementations and their state compared after *every* operation, so a
@@ -140,11 +178,23 @@ which turns silent loss into detectable loss, and the consumer:
   message counts and foreign traffic, fed directly to a decoder that owns no
   socket, so the paths that are near-impossible to provoke over a real network
   are exercised deterministically.
+- **Matching against a naive reference** — a deliberately slow, obviously-correct
+  book that spells price-time priority out literally, compared trade-for-trade
+  and queue-position-for-queue-position after every operation.
+- **Conservation** — every unit submitted is filled, resting, or cancelled.
+  Nothing is created or destroyed.
+- **Allocation budgets** — zero bytes, enforced.
 
-These found four real bugs that the unit tests did not, each recorded in the
-commit that fixed it — a stale-cache bug in the ladder's depth cap, a malformed
-packet that could permanently desynchronise a consumer, false gap reports under
-reordering, and a gap flush that left the consumer silently behind the feed.
+These found five real bugs the unit tests did not, each recorded in the commit
+that fixed it — a stale-cache bug in the ladder's depth cap, a malformed packet
+that could permanently desynchronise a consumer, false gap reports under
+reordering, a gap flush that left the consumer silently behind the feed, and the
+same stale-cache bug reappearing in the matching engine's price index.
+
+That last one is the instructive one: having fixed it once, I wrote it again in
+similar code. The response was not a third patch but to delete the duplication —
+both books now share one `PriceIndex`, so the subtle part exists in exactly one
+place and cannot be got wrong independently twice.
 
 ---
 
@@ -152,7 +202,7 @@ reordering, and a gap flush that left the consumer silently behind the feed.
 
 ```bash
 dotnet build MarketDataSimulator.sln -c Release
-dotnet test Tests/Tests.csproj -c Release       # 61 tests
+dotnet test Tests/Tests.csproj -c Release       # 82 tests
 ./scripts/smoke.sh                              # end-to-end, both transports
 ```
 
@@ -168,6 +218,9 @@ Benchmarks:
 ```bash
 # Order book micro-benchmark
 dotnet run --project Bench -c Release -- books --depths 10,100,1000
+
+# Matching engine micro-benchmark
+dotnet run --project Bench -c Release -- matching --sizes 1000,10000,1000000
 
 # Unicast dissemination sweep
 python3 bench/run.py --subscribers 100 200 400 600 --rates 50 --tag unicast

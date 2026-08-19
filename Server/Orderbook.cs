@@ -1,5 +1,6 @@
 using MarketData.Common;
 using MarketData.Common.Books;
+using MarketData.Common.Matching;
 using MarketData.Common.Server;
 using System;
 using System.Collections.Generic;
@@ -23,8 +24,8 @@ namespace MarketData.Server
         public Orderbook(Instrument instrument, IOrderbookService service, string bookImplementation, int priceBand)
         {
             _instrument = instrument;
-            _simulator = new BookSimulator(
-                BookFactory.Create(bookImplementation, instrument.Specifications.Depth, priceBand), priceBand);
+            _depth = instrument.Specifications.Depth;
+            _flow = new OrderFlowSimulator(new LimitOrderBook(-priceBand, priceBand));
 
             _spinTask = GenerateUpdatesAsync(new WeakReference<Orderbook>(this), instrument, service, _disposedSource);
         }
@@ -95,37 +96,77 @@ namespace MarketData.Server
             }
         }
 
-        private ValueTask PublishUpdateAsync(Random random, IOrderbookService service)
+        /// <summary>
+        /// Advances the market by one action and publishes what changed.
+        /// </summary>
+        /// <remarks>
+        /// The depth feed is derived from the order-by-order events rather than generated
+        /// alongside them: whichever price levels the matching engine touched are re-read and
+        /// republished. That direction keeps a single source of truth - a subscriber applying the
+        /// depth feed necessarily agrees with the engine's book, because the feed is a function of
+        /// it.
+        /// </remarks>
+        private async ValueTask PublishUpdateAsync(Random random, IOrderbookService service)
         {
-            OrderbookUpdate update;
+            OrderbookUpdate snapshot = null;
+            var updates = _updates;
+            updates.Clear();
 
             lock (_lock)
             {
                 if (_disposed)
-                    return ValueTask.CompletedTask;
+                    return;
 
                 if (random.NextDouble() < _instrument.Specifications.SnapshotProbability)
                 {
-                    _simulator.Refresh(random);
-                    update = new OrderbookUpdate(BuildSnapshot());
+                    snapshot = new OrderbookUpdate(BuildSnapshot());
                 }
                 else
                 {
-                    var mutation = _simulator.Mutate(random);
+                    _events.Clear();
+                    _flow.Step(random, _events);
 
-                    if (mutation.Kind == MutationKind.None)
-                        return ValueTask.CompletedTask;
+                    if (_events.Count == 0)
+                        return;
 
-                    update = new OrderbookUpdate(new OrderbookIncrementalUpdate(
-                        _instrument.Id, ToUpdateType(mutation.Kind), ToLevel(mutation.Side, mutation.Level)));
+                    CollectLevelUpdates(_events, updates);
+
+                    // Cancels and fills continually retire orders the generator still holds ids
+                    // for; compacting occasionally keeps that list from growing without bound.
+                    if (++_stepsSinceCompact >= CompactInterval)
+                    {
+                        _stepsSinceCompact = 0;
+                        _flow.Compact();
+                    }
                 }
             }
 
-            // Stamped as late as possible before the update enters the dissemination path, so the
-            // subscriber-side delta measures queueing, fan-out and transport rather than generation.
-            update = update with { SourceTimestamp = Stopwatch.GetTimestamp() };
+            var stamp = Stopwatch.GetTimestamp();
 
-            return service.OnOrderbookUpdateAsync(update);
+            if (snapshot is not null)
+            {
+                await service.OnOrderbookUpdateAsync(snapshot with { SourceTimestamp = stamp }).ConfigureAwait(false);
+                return;
+            }
+
+            foreach (var update in updates)
+                await service.OnOrderbookUpdateAsync(update with { SourceTimestamp = stamp }).ConfigureAwait(false);
+        }
+
+        /// <summary>Turns the engine's order-level events into aggregated level updates.</summary>
+        private void CollectLevelUpdates(List<MarketEvent> events, List<OrderbookUpdate> updates)
+        {
+            _changes.Clear();
+            _projection.Project(_flow.Book, events, _changes);
+
+            foreach (var change in _changes)
+            {
+                var type = change.IsRemoval ? OrderbookUpdateType.Remove : OrderbookUpdateType.Replace;
+                var level = new OrderbookLevel(change.Price, change.Side == Side.Bid,
+                    (uint)Math.Min(change.Quantity, uint.MaxValue));
+
+                updates.Add(new OrderbookUpdate(new OrderbookIncrementalUpdate(_instrument.Id, type, level)));
+            }
         }
 
         private OrderbookSnapshotUpdate BuildSnapshot()
@@ -133,25 +174,14 @@ namespace MarketData.Server
 
         private IReadOnlyList<OrderbookLevel> ReadSide(Side side)
         {
-            var levels = _simulator.ReadSide(side);
-            var converted = new List<OrderbookLevel>(levels.Count);
+            var count = _flow.Book.CopyDepth(side, _scratch.AsSpan(0, _depth));
+            var levels = new List<OrderbookLevel>(count);
 
-            foreach (var level in levels)
-                converted.Add(ToLevel(side, level));
+            for (var i = 0; i < count; i++)
+                levels.Add(new OrderbookLevel(_scratch[i].Price, side == Side.Bid, _scratch[i].Quantity));
 
-            return converted.AsReadOnly();
+            return levels.AsReadOnly();
         }
-
-        private static OrderbookLevel ToLevel(Side side, PriceLevel level)
-            => new OrderbookLevel(level.Price, side == Side.Bid, level.Quantity);
-
-        private static OrderbookUpdateType ToUpdateType(MutationKind kind) => kind switch
-        {
-            MutationKind.Add => OrderbookUpdateType.Add,
-            MutationKind.Replace => OrderbookUpdateType.Replace,
-            MutationKind.Remove => OrderbookUpdateType.Remove,
-            _ => OrderbookUpdateType.Invalid,
-        };
 
         public OrderbookSnapshotUpdate GetSnapshot()
         {
@@ -173,8 +203,17 @@ namespace MarketData.Server
             _spinTask.GetAwaiter().GetResult();
         }
 
+        private const int CompactInterval = 4096;
+
         private readonly Instrument _instrument;
-        private readonly BookSimulator _simulator;
+        private readonly int _depth;
+        private readonly OrderFlowSimulator _flow;
+        private readonly List<MarketEvent> _events = new List<MarketEvent>(64);
+        private readonly List<OrderbookUpdate> _updates = new List<OrderbookUpdate>(64);
+        private readonly DepthProjection _projection = new DepthProjection();
+        private readonly List<LevelChange> _changes = new List<LevelChange>(64);
+        private readonly PriceLevel[] _scratch = new PriceLevel[1024];
+        private int _stepsSinceCompact;
         private readonly Task _spinTask;
         private readonly object _lock = new object();
         private bool _disposed;

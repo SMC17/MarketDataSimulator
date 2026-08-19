@@ -15,6 +15,9 @@ using System.Text.Json.Serialization;
 if (args.Length > 0 && args[0] == "books")
     Environment.Exit(BookBenchmark.Run(args.Skip(1).ToArray()));
 
+if (args.Length > 0 && args[0] == "matching")
+    Environment.Exit(MatchingBenchmark.Run(args.Skip(1).ToArray()));
+
 if (args.Length > 0 && args[0] == "multicast")
     Environment.Exit(MulticastBenchmark.Run(args.Skip(1).ToArray()));
 

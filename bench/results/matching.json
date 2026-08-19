@@ -1,0 +1,42 @@
+[
+  {
+    "RestingOrders": 100,
+    "AddNsPerOp": 125.47,
+    "CancelNsPerOp": 127.65,
+    "MatchNsPerOp": 97.81,
+    "MixedNsPerOp": 73.93,
+    "MixedBytesPerOp": 41.8
+  },
+  {
+    "RestingOrders": 1000,
+    "AddNsPerOp": 57.31,
+    "CancelNsPerOp": 55.75,
+    "MatchNsPerOp": 100.95,
+    "MixedNsPerOp": 70.09,
+    "MixedBytesPerOp": 42.7
+  },
+  {
+    "RestingOrders": 10000,
+    "AddNsPerOp": 51.14,
+    "CancelNsPerOp": 57.85,
+    "MatchNsPerOp": 103.75,
+    "MixedNsPerOp": 75.45,
+    "MixedBytesPerOp": 39.9
+  },
+  {
+    "RestingOrders": 100000,
+    "AddNsPerOp": 48.43,
+    "CancelNsPerOp": 82.21,
+    "MatchNsPerOp": 105.93,
+    "MixedNsPerOp": 85.88,
+    "MixedBytesPerOp": 17.1
+  },
+  {
+    "RestingOrders": 1000000,
+    "AddNsPerOp": 48.7,
+    "CancelNsPerOp": 158.68,
+    "MatchNsPerOp": 127.57,
+    "MixedNsPerOp": 414.7,
+    "MixedBytesPerOp": 17.3
+  }
+]

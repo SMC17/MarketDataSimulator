@@ -358,6 +358,62 @@ it is the configured default. Measurement chose it; asymptotics would not have.
 
 ---
 
+## Matching engine micro-benchmark
+
+The book that produces the feed is order-by-order with price-time priority: an id map from order
+id to the order object, an intrusive FIFO per price level, and a bitset price index for the touch.
+That gives O(1) add, O(1) cancel, O(1) reduce, and matching linear only in the number of orders
+actually filled.
+
+The sweep across book sizes exists to make those claims falsifiable. An O(1) cancel should cost
+the same with a thousand resting orders as with a million; if the measured cost climbs, the claim
+is wrong whatever the code looks like. Price-level churn is held out of the cancel column - every
+order sits on one of 64 fixed levels - so what is measured is one hash lookup and one unlink.
+
+200,000 operations, minimum of 5 trials:
+
+| Resting orders | Add ns/op | Cancel ns/op | Match ns/op | Mixed ns/op |
+|---|---|---|---|---|
+| 100 | 125.5 | 127.7 | 97.8 | 73.9 |
+| 1,000 | 57.3 | **55.8** | 100.9 | 70.1 |
+| 10,000 | 51.1 | **57.9** | 103.7 | 75.4 |
+| 100,000 | 48.4 | 82.2 | 105.9 | 85.9 |
+| 1,000,000 | 48.7 | 158.7 | 127.6 | 414.7 |
+
+Mixed is 60% add, 35% cancel, 5% aggressive — roughly a real venue's message profile, where
+cancels vastly outnumber trades.
+
+**Cancel is flat at ~56 ns from 1,000 to 10,000 resting orders, then climbs to 159 ns at a
+million.** The algorithm did not change; the working set did. At ten thousand orders the id map
+and the order objects together are on the order of a megabyte and sit in cache. At a million they
+are roughly a hundred megabytes, and every cancel becomes two dependent trips to main memory — the
+map lookup, then the order object it points at. The knee lands exactly where the working set
+leaves the last-level cache.
+
+This is the same lesson as the aggregated book benchmark, in the other direction: complexity
+classes describe how cost scales with *n*, and say nothing about what a constant-time operation
+actually costs once *n* stops fitting in cache. An order book sized for a real venue lives on the
+right-hand side of that table, which is an argument for compact, pooled, contiguous storage rather
+than for a cleverer algorithm.
+
+The 100-order row is slower than the 1,000-order row because at that size the 64 price levels are
+sparsely populated, so cancels empty levels and adds recreate them; the level churn dominates.
+
+### Allocation
+
+The matching path allocates nothing in steady state, and that is asserted rather than measured:
+`Tests/AllocationTests.cs` warms the pools and then requires **exactly zero bytes** across 200,000
+iterations of add/cancel, of matching, of depth publishing, of aggregated-book publishing, and of
+wire encoding. Orders and price levels are recycled, because a venue's steady state is a torrent of
+arrivals and cancellations at roughly constant book size, and a fresh object per order would hand
+the collector hundreds of megabytes an hour of pure churn — with the resulting pauses landing in
+the matching path, the one place that cannot absorb them.
+
+An allocation budget only holds if something enforces it. A single incautious edit reintroduces
+allocation silently, and nothing else in a test suite would notice.
+
+---
+
 ## Repeatability
 
 Each configuration was run four times, with a fresh server process each time.
