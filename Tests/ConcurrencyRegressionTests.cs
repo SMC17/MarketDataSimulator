@@ -207,7 +207,9 @@ namespace MarketData.Tests
             using var queue = new DisseminationQueue<int>(1024);
             using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(
                 TestContext.Current.CancellationToken);
-            shutdown.CancelAfter(TimeSpan.FromSeconds(5));
+            // 200 paced messages at ~1 ms each is the floor, and timer granularity under load
+            // pushes it well above that; 5 s left no margin on a shared 4-core host.
+            shutdown.CancelAfter(TimeSpan.FromSeconds(30));
             var cancellationToken = shutdown.Token;
 
             var loud = queue.AddProducer();
@@ -217,7 +219,12 @@ namespace MarketData.Tests
             var quietSeen = 0;
             var loudSeen = 0;
 
-            var consumer = Task.Run(() =>
+            // Dedicated threads rather than pool tasks. Both of these spin hot, and on a small
+            // box two hot pool tasks starve the pool that this test's own `await Task.Delay`
+            // pacing depends on - so the test would fail on its deadline while the code under
+            // test was behaving perfectly. The sibling cursor test is threaded the same way for
+            // the same reason.
+            var consumer = Task.Factory.StartNew(() =>
             {
                 while (quietSeen < quietMessages && !cancellationToken.IsCancellationRequested)
                 {
@@ -229,16 +236,16 @@ namespace MarketData.Tests
                     else
                         loudSeen++;
                 }
-            }, cancellationToken);
+            }, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
-            var loudProducer = Task.Run(() =>
+            var loudProducer = Task.Factory.StartNew(() =>
             {
                 while (!consumer.IsCompleted && !cancellationToken.IsCancellationRequested)
                 {
                     loud.TryWrite(0);
                     queue.Signal();
                 }
-            }, cancellationToken);
+            }, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
             for (var i = 0; i < quietMessages; i++)
             {
