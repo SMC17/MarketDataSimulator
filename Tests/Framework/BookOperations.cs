@@ -38,21 +38,35 @@ namespace MarketData.Tests.Framework
         public const int MaxPrice = 40;
 
         public static List<BookOperation> Generate(Random random, int maxLength = 200)
+            => Generate(random, maxLength, MinPrice, MaxPrice);
+
+        /// <summary>
+        /// Generates over an explicit price band, for books deep enough that the default band
+        /// cannot fill them.
+        /// </summary>
+        /// <remarks>
+        /// The default band holds 81 distinct prices, which is plenty to saturate a depth-10 book
+        /// but leaves a deep one permanently sparse - and a book that never fills never reaches the
+        /// code paths that only exist for full ones.
+        /// </remarks>
+        public static List<BookOperation> Generate(Random random, int maxLength, int minPrice, int maxPrice)
         {
             var length = random.Next(1, maxLength + 1);
             var operations = new List<BookOperation>(length);
 
             for (var i = 0; i < length; i++)
-                operations.Add(GenerateOne(random));
+                operations.Add(GenerateOne(random, minPrice, maxPrice));
 
             return operations;
         }
 
-        public static BookOperation GenerateOne(Random random)
+        public static BookOperation GenerateOne(Random random) => GenerateOne(random, MinPrice, MaxPrice);
+
+        public static BookOperation GenerateOne(Random random, int minPrice, int maxPrice)
         {
             var roll = random.NextDouble();
             var side = random.Next(2) == 0 ? Side.Bid : Side.Ask;
-            var price = random.Next(MinPrice, MaxPrice + 1);
+            var price = random.Next(minPrice, maxPrice + 1);
 
             if (roll < 0.70)
                 return new BookOperation(BookOperationKind.Upsert, side, price, (uint)random.Next(1, 1000));

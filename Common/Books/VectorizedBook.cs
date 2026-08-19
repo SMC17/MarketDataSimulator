@@ -19,7 +19,7 @@ namespace MarketData.Common.Books
     /// be waste; separated, one load is sixteen prices.
     /// </para>
     /// <para>
-    /// <b>Prices stored as an order key.</b> Bids are negated on the way in, so both sides ascend
+    /// <b>Prices stored as an order key.</b> Bids are inverted on the way in, so both sides ascend
     /// and touch-first is simply ascending order. That removes the per-comparison branch on side,
     /// and makes the position of a price the count of keys below it - a question SIMD answers
     /// directly.
@@ -71,11 +71,19 @@ namespace MarketData.Common.Books
         public int Count(Side side) => _counts[(int)side];
 
         /// <summary>Maps a price to a key that sorts touch-first ascending on either side.</summary>
+        /// <remarks>
+        /// Bids invert with bitwise NOT rather than negation. Negation is not a bijection on
+        /// <see cref="int"/>: <c>-int.MinValue</c> overflows back to <c>int.MinValue</c>, so a bid at
+        /// that price produced the smallest key and sorted as the <em>best</em> bid instead of the
+        /// worst - a crossed book, and a divergence from every other implementation. <c>~x</c> is
+        /// order-reversing over the whole range, is its own inverse, and costs the same one
+        /// instruction.
+        /// </remarks>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int ToKey(Side side, int price) => side == Side.Bid ? -price : price;
+        private static int ToKey(Side side, int price) => side == Side.Bid ? ~price : price;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int ToPrice(Side side, int key) => side == Side.Bid ? -key : key;
+        private static int ToPrice(Side side, int key) => side == Side.Bid ? ~key : key;
 
         public bool TryGetBest(Side side, out PriceLevel level)
         {
@@ -199,10 +207,12 @@ namespace MarketData.Common.Books
             var keys = _keys[index].AsSpan(0, count);
             var quantities = _quantities[index].AsSpan(0, count);
             var levels = destination.Slice(0, count);
-            var sign = side == Side.Bid ? -1 : 1;
 
+            // ToPrice rather than a hoisted sign multiply. The multiply was a second copy of the
+            // key transform, and when the transform changed this copy silently kept the old one -
+            // every price off by one. The branch inside ToPrice is loop-invariant and hoists.
             for (var i = 0; i < levels.Length; i++)
-                levels[i] = new PriceLevel(sign * keys[i], quantities[i]);
+                levels[i] = new PriceLevel(ToPrice(side, keys[i]), quantities[i]);
 
             return count;
         }
