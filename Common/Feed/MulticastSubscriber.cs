@@ -1,5 +1,7 @@
 using MarketData.Common.Books;
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -21,26 +23,43 @@ namespace MarketData.Common.Feed
         public FeedStatistics Statistics => Decoder.Statistics;
 
         public MulticastSubscriber(IPAddress group, int port, IPAddress @interface,
-            Func<int, IOrderBook> bookFactory, int receiveBufferBytes = 1 << 20)
+            Func<int, IOrderBook> bookFactory, int receiveBufferBytes = 1 << 20,
+            IPAddress redundantGroup = null, int redundantPort = 0)
         {
             Decoder = new FeedDecoder(bookFactory);
 
-            _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            _socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            _sockets.Add(Join(group, port, @interface, receiveBufferBytes));
+
+            if (redundantGroup is not null)
+            {
+                // Both lines feed the same decoder. Its duplicate suppression performs the
+                // arbitration: the first copy of a packet to arrive wins, the second is discarded,
+                // and a packet dropped on one line leaves no gap so long as the other delivers it.
+                _sockets.Add(Join(redundantGroup, redundantPort > 0 ? redundantPort : port,
+                    @interface, receiveBufferBytes));
+            }
+        }
+
+        private static Socket Join(IPAddress group, int port, IPAddress @interface, int receiveBufferBytes)
+        {
+            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
 
             // A generous receive buffer is the subscriber's only shock absorber: a multicast feed
             // applies no backpressure, so whatever the socket cannot hold is simply gone.
-            _socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveBuffer, receiveBufferBytes);
-            _socket.Bind(new IPEndPoint(IPAddress.Any, port));
-            _socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveBuffer, receiveBufferBytes);
+            socket.Bind(new IPEndPoint(IPAddress.Any, port));
+            socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
                 new MulticastOption(group, @interface ?? IPAddress.Loopback));
+            return socket;
         }
 
         /// <summary>Receives until <paramref name="token"/> is cancelled.</summary>
         public void Receive(CancellationToken token)
         {
+            var socket = _sockets[0];
             var buffer = new byte[FeedProtocol.MaxPacketSize];
-            _socket.ReceiveTimeout = 250;
+            socket.ReceiveTimeout = 250;
 
             while (!token.IsCancellationRequested)
             {
@@ -48,7 +67,7 @@ namespace MarketData.Common.Feed
 
                 try
                 {
-                    received = _socket.Receive(buffer);
+                    received = socket.Receive(buffer);
                 }
                 catch (SocketException e) when (e.SocketErrorCode == SocketError.TimedOut)
                 {
@@ -72,7 +91,57 @@ namespace MarketData.Common.Feed
         /// test. This awaits the socket instead, so thousands of subscribers share the thread pool
         /// and the measurement stays about the feed.
         /// </remarks>
-        public async Task ReceiveAsync(CancellationToken token)
+        /// <summary>
+        /// Time out-of-order packets may be held before the hole in front of them is ruled lost.
+        /// Must exceed the plausible delay between the A and B copies of a packet, or arbitration
+        /// would be reported as loss.
+        /// </summary>
+        public TimeSpan GapTimeout { get; set; } = TimeSpan.FromMilliseconds(20);
+
+        public Task ReceiveAsync(CancellationToken token)
+            => Task.WhenAll(_sockets.Select(socket => ReceiveAsync(socket, token)).Append(RunGapTimerAsync(token)));
+
+        /// <summary>
+        /// Declares a gap once the stream has stopped advancing while packets are still held.
+        /// </summary>
+        private async Task RunGapTimerAsync(CancellationToken token)
+        {
+            var lastExpected = Decoder.ExpectedSequence;
+            var stalledFor = TimeSpan.Zero;
+            var interval = TimeSpan.FromMilliseconds(Math.Max(1, GapTimeout.TotalMilliseconds / 4));
+
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(interval, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                var expected = Decoder.ExpectedSequence;
+
+                if (Decoder.HeldPackets == 0 || expected != lastExpected)
+                {
+                    lastExpected = expected;
+                    stalledFor = TimeSpan.Zero;
+                    continue;
+                }
+
+                stalledFor += interval;
+
+                if (stalledFor >= GapTimeout)
+                {
+                    Decoder.FlushGaps();
+                    stalledFor = TimeSpan.Zero;
+                    lastExpected = Decoder.ExpectedSequence;
+                }
+            }
+        }
+
+        private async Task ReceiveAsync(Socket socket, CancellationToken token)
         {
             var buffer = new byte[FeedProtocol.MaxPacketSize];
 
@@ -82,7 +151,7 @@ namespace MarketData.Common.Feed
 
                 try
                 {
-                    received = await _socket.ReceiveAsync(new Memory<byte>(buffer), SocketFlags.None, token)
+                    received = await socket.ReceiveAsync(new Memory<byte>(buffer), SocketFlags.None, token)
                         .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
@@ -102,8 +171,12 @@ namespace MarketData.Common.Feed
             }
         }
 
-        public void Dispose() => _socket.Dispose();
+        public void Dispose()
+        {
+            foreach (var socket in _sockets)
+                socket.Dispose();
+        }
 
-        private readonly Socket _socket;
+        private readonly List<Socket> _sockets = new List<Socket>(2);
     }
 }

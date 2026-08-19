@@ -39,9 +39,20 @@ namespace MarketData.Common.Feed
         public long MessagesSent => Interlocked.Read(ref _messagesSent);
         public long BytesSent => Interlocked.Read(ref _bytesSent);
 
-        public MulticastPublisher(IPAddress group, int port, IPAddress @interface = null, int maxBatch = 64)
+        /// <param name="redundantGroup">
+        /// Optional second group carrying an identical copy of the feed. Real exchanges publish an
+        /// A and a B line over disjoint paths so that a drop on one is covered by the other;
+        /// subscribers take whichever copy arrives first. It costs one extra send per packet -
+        /// still independent of the subscriber count - and roughly squares the probability that a
+        /// given packet is lost to every subscriber.
+        /// </param>
+        public MulticastPublisher(IPAddress group, int port, IPAddress @interface = null, int maxBatch = 64,
+            IPAddress redundantGroup = null, int redundantPort = 0)
         {
             _endpoint = new IPEndPoint(group, port);
+            _redundantEndpoint = redundantGroup is null
+                ? null
+                : new IPEndPoint(redundantGroup, redundantPort > 0 ? redundantPort : port);
             _maxBatch = Math.Max(1, maxBatch);
 
             _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
@@ -103,6 +114,14 @@ namespace MarketData.Common.Feed
             {
                 _socket.SendTo(_buffer, 0, _offset, SocketFlags.None, _endpoint);
 
+                if (_redundantEndpoint is not null)
+                {
+                    // Byte-identical, same sequence numbers: the subscriber's duplicate suppression
+                    // is what turns two copies back into one stream.
+                    _socket.SendTo(_buffer, 0, _offset, SocketFlags.None, _redundantEndpoint);
+                    Interlocked.Increment(ref _packetsSent);
+                }
+
                 Interlocked.Add(ref _sequence, _pending);
                 Interlocked.Increment(ref _packetsSent);
                 Interlocked.Add(ref _messagesSent, _pending);
@@ -131,6 +150,7 @@ namespace MarketData.Common.Feed
         }
 
         private readonly IPEndPoint _endpoint;
+        private readonly IPEndPoint _redundantEndpoint;
         private readonly Socket _socket;
         private readonly int _maxBatch;
         private readonly object _lock = new object();
