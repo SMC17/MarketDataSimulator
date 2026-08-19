@@ -36,6 +36,9 @@ if (args.Length > 0 && args[0] == "multicast")
 if (args.Length > 0 && args[0] == "protocol")
     Environment.Exit(ProtocolBenchmark.Run(args.Skip(1).ToArray()));
 
+if (args.Length > 0 && args[0] == "timing")
+    Environment.Exit(TimingBenchmark.Run(args.Skip(1).ToArray()));
+
 if (args.Length > 0 && args[0] == "durability")
     Environment.Exit(DurabilityBenchmark.Run(args.Skip(1).ToArray()));
 
