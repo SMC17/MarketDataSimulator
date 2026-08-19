@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -58,8 +59,41 @@ namespace MarketData.Common.Concurrency
         /// <summary>Items read since construction.</summary>
         public long Consumed => Volatile.Read(ref _read.Value);
 
-        public int Count => (int)(Published - Consumed);
-        public bool IsEmpty => Published == Consumed;
+        /// <summary>Items currently resident in the buffer, as an estimate.</summary>
+        /// <remarks>
+        /// <para>
+        /// Two independent 64-bit loads, so the result belongs to no single instant. What it can be
+        /// made to guarantee is that it stays inside <c>[0, Capacity]</c>, because a queue-depth
+        /// metric that reports a negative backlog is worse than useless.
+        /// </para>
+        /// <para>
+        /// The consumer cursor is read first, deliberately. Both cursors only ever increase and the
+        /// producer is never behind the consumer, so a producer cursor read afterwards is at least
+        /// as large as the consumer cursor was: the difference cannot come out negative. The
+        /// opposite order has no such property - a consumer advancing between the loads yields a
+        /// negative count outright.
+        /// </para>
+        /// <para>
+        /// The residual error is one-sided and bounded: this order over-reports by however much the
+        /// producer advanced between the loads, which the clamp caps at <see cref="Capacity"/>.
+        /// </para>
+        /// </remarks>
+        public int Count
+        {
+            get
+            {
+                var consumed = Consumed;
+                var published = Published;
+                var count = published - consumed;
+
+                if (count <= 0)
+                    return 0;
+
+                return count > Capacity ? Capacity : (int)count;
+            }
+        }
+
+        public bool IsEmpty => Count == 0;
 
         /// <summary>Writes rejected because the buffer was full.</summary>
         public long Rejected => Volatile.Read(ref _rejected);
@@ -68,6 +102,13 @@ namespace MarketData.Common.Concurrency
         {
             if (capacity <= 0)
                 throw new ArgumentOutOfRangeException(nameof(capacity), capacity, "Capacity must be positive.");
+
+            // The mask indexing requires a power of two, and the largest one an int can hold is
+            // 2^30. Beyond that the round-up overflows to zero and spins forever instead of
+            // failing, so reject it here where the caller can see why.
+            if (capacity > MaxCapacity)
+                throw new ArgumentOutOfRangeException(nameof(capacity), capacity,
+                    $"Capacity must not exceed {MaxCapacity}, the largest power of two an int can represent.");
 
             Capacity = RoundUpToPowerOfTwo(capacity);
             _mask = Capacity - 1;
@@ -135,25 +176,46 @@ namespace MarketData.Common.Concurrency
         /// than paying a release store per item. Under load that is the difference between one
         /// cache-line handoff per batch and one per message.
         /// </remarks>
-        public int PeekBatch(out T[] slots, out int start)
+        /// <returns>
+        /// A span over the contiguous readable run. Empty when there is nothing to read.
+        /// </returns>
+        /// <remarks>
+        /// A span rather than the backing array: handing out <c>_slots</c> itself let a caller read
+        /// past the batch into slots the producer is concurrently writing, which is a torn read.
+        /// The span cannot address them.
+        /// </remarks>
+        public ReadOnlySpan<T> PeekBatch()
         {
-            slots = _slots;
             var read = _read.Value;
-            var available = (int)(Volatile.Read(ref _write.Value) - read);
-
-            start = (int)(read & _mask);
+            var available = Volatile.Read(ref _write.Value) - read;
 
             if (available <= 0)
-                return 0;
+                return ReadOnlySpan<T>.Empty;
 
+            var start = (int)(read & _mask);
             var toEnd = Capacity - start;
-            return available < toEnd ? available : toEnd;
+            var length = available < toEnd ? (int)available : toEnd;
+
+            return new ReadOnlySpan<T>(_slots, start, length);
         }
 
         /// <summary>Marks <paramref name="count"/> items consumed after a <see cref="PeekBatch"/>.</summary>
+        /// <remarks>
+        /// Over-releasing is unrecoverable, not merely wrong: the read cursor moves past the write
+        /// cursor, every subsequent read reports the buffer empty forever, and nothing throws. It is
+        /// worth a bounds check on the consumer's own arithmetic.
+        /// </remarks>
         public void Release(int count)
         {
+            if (count < 0)
+                throw new ArgumentOutOfRangeException(nameof(count), count, "Count must not be negative.");
+
             var read = _read.Value;
+            var available = Volatile.Read(ref _write.Value) - read;
+
+            if (count > available)
+                throw new ArgumentOutOfRangeException(nameof(count), count,
+                    $"Cannot release {count} items; only {available} are unconsumed.");
 
             if (RuntimeHelpers.IsReferenceOrContainsReferences<T>())
             {
@@ -164,15 +226,10 @@ namespace MarketData.Common.Concurrency
             Volatile.Write(ref _read.Value, read + count);
         }
 
-        private static int RoundUpToPowerOfTwo(int value)
-        {
-            var result = 1;
+        /// <summary>Largest power of two representable in an <see cref="int"/>.</summary>
+        public const int MaxCapacity = 1 << 30;
 
-            while (result < value)
-                result <<= 1;
-
-            return result;
-        }
+        private static int RoundUpToPowerOfTwo(int value) => (int)BitOperations.RoundUpToPowerOf2((uint)value);
 
         private readonly T[] _slots;
         private readonly int _mask;

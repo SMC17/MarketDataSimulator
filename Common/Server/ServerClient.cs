@@ -9,6 +9,22 @@ using System.Threading.Tasks;
 
 namespace MarketData.Common.Server
 {
+    /// <summary>What happened to an update handed to a subscriber's outbound queue.</summary>
+    internal enum EnqueueResult
+    {
+        /// <summary>Written to the subscriber's queue; it will reach the wire.</summary>
+        Queued,
+
+        /// <summary>
+        /// Deliberately not sent - the subscriber is not subscribed to the instrument, is still
+        /// awaiting its first snapshot, or is already tearing down. Neither a send nor a loss.
+        /// </summary>
+        Suppressed,
+
+        /// <summary>The queue was full: the subscriber is falling behind and lost this update.</summary>
+        Dropped,
+    }
+
     /// <summary>
     /// One subscriber's view of the feed: its subscription set, its outbound queue, and the pump
     /// that drains that queue onto its gRPC stream.
@@ -91,29 +107,35 @@ namespace MarketData.Common.Server
         /// subscribed instrument stays suppressed until its first snapshot arrives, so a client never
         /// sees incrementals against a book it has not been given.
         /// </summary>
-        /// <returns><c>true</c> if the update was queued; <c>false</c> if it was dropped.</returns>
-        public bool TryEnqueue(Proto.OrderbookUpdate message, int instrumentId, bool isSnapshot, bool isEmptySnapshot)
+        /// <remarks>
+        /// Three outcomes, not two. Suppression is not a send and not a drop: nothing reached the
+        /// wire, but nothing was lost either, because the subscriber was never entitled to that
+        /// update. Collapsing it into either bucket inflates that statistic - an earlier version
+        /// returned <c>true</c> for suppression and so reported updates as sent that were never
+        /// queued.
+        /// </remarks>
+        public EnqueueResult TryEnqueue(Proto.OrderbookUpdate message, int instrumentId, bool isSnapshot, bool isEmptySnapshot)
         {
             lock (_lock)
             {
                 if (!_subscriptions.TryGetValue(instrumentId, out var awaitingSnapshot) && !isEmptySnapshot)
-                    return true;
+                    return EnqueueResult.Suppressed;
 
                 if (awaitingSnapshot && !isSnapshot)
-                    return true;
+                    return EnqueueResult.Suppressed;
 
                 if (_outbound.Writer.TryWrite(message))
                 {
                     if (awaitingSnapshot && isSnapshot)
                         _subscriptions[instrumentId] = false;
 
-                    return true;
+                    return EnqueueResult.Queued;
                 }
 
                 // TryWrite also fails on a completed queue, which means the subscriber is on its way
                 // out rather than falling behind. Only the latter is a dropped update.
                 if (_completed)
-                    return true;
+                    return EnqueueResult.Suppressed;
 
                 // Queue full: this subscriber is not draining fast enough. Drop the update and put
                 // the instrument back into snapshot-recovery so the client resynchronises from the
@@ -121,9 +143,11 @@ namespace MarketData.Common.Server
                 if (_subscriptions.ContainsKey(instrumentId))
                     _subscriptions[instrumentId] = true;
 
+                // This counter is the single owner of per-subscriber drops. The service reads it
+                // through DroppedUpdates rather than keeping a parallel tally of its own.
                 Interlocked.Increment(ref _droppedUpdates);
 
-                return false;
+                return EnqueueResult.Dropped;
             }
         }
 
