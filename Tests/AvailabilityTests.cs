@@ -175,7 +175,7 @@ namespace MarketData.Tests
                     Assert.Equal(NodeRole.Backup, node.Role);
             }
 
-            Assert.Single(promoted.Where(entry => entry.node.Role == NodeRole.Primary));
+            Assert.Single(promoted, entry => entry.node.Role == NodeRole.Primary);
         }
 
         [Fact]

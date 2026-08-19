@@ -53,8 +53,8 @@ namespace MarketData.Common.Time
             if (!canPin)
                 notes.Add("thread affinity is not supported on this platform");
 
-            if (allowed.Count < logical)
-                notes.Add($"cgroup restricts this process to {allowed.Count} of {logical} processors");
+            if (allowed.Count != logical)
+                notes.Add($"affinity exposes {allowed.Count} CPUs; runtime parallelism is {logical}");
 
             if (numaNodes <= 1)
                 notes.Add("single NUMA node: cross-node memory placement cannot be a factor here");
@@ -73,6 +73,12 @@ namespace MarketData.Common.Time
         public static IReadOnlyList<int> AllowedProcessors()
         {
             var allowed = new List<int>();
+
+            if (!OperatingSystem.IsLinux() && !OperatingSystem.IsWindows())
+            {
+                allowed.AddRange(Enumerable.Range(0, Environment.ProcessorCount));
+                return allowed;
+            }
 
             try
             {

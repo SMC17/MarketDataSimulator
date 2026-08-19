@@ -1,5 +1,5 @@
 {
-  "TimestampUtc": "2026-08-19T17:07:34.9160469+00:00",
+  "TimestampUtc": "2026-08-19T22:02:46.0298413+00:00",
   "Runtime": ".NET 8.0.30",
   "OperatingSystem": "Ubuntu 24.04.3 LTS",
   "Architecture": "X64",
@@ -12,73 +12,113 @@
     {
       "RestingOrders": 100,
       "AddCancelCycleNs": {
-        "Median": 91.52,
-        "Min": 90.86,
-        "Max": 92.55
+        "Median": 96.32,
+        "Min": 94.21,
+        "Max": 122.08
       },
       "CancelAddCycleNs": {
-        "Median": 102.43,
-        "Min": 100.83,
-        "Max": 110.21
+        "Median": 123.69,
+        "Min": 110.31,
+        "Max": 165.33
       },
       "MatchReplenishCycleNs": {
-        "Median": 88.68,
-        "Min": 88.04,
-        "Max": 89.79
+        "Median": 101.3,
+        "Min": 98.05,
+        "Max": 176.45
+      },
+      "RiskManagedCycleNs": {
+        "Median": 326.6,
+        "Min": 319.98,
+        "Max": 401.58
+      },
+      "PolicyRiskCycleNs": {
+        "Median": 590.24,
+        "Min": 546.35,
+        "Max": 638.54
       }
     },
     {
       "RestingOrders": 1000,
       "AddCancelCycleNs": {
-        "Median": 104.7,
-        "Min": 94.33,
-        "Max": 111.86
+        "Median": 119.99,
+        "Min": 95.97,
+        "Max": 133.69
       },
       "CancelAddCycleNs": {
-        "Median": 75.7,
-        "Min": 73.68,
-        "Max": 79.87
+        "Median": 79.92,
+        "Min": 78.44,
+        "Max": 81.49
       },
       "MatchReplenishCycleNs": {
-        "Median": 86,
-        "Min": 84.06,
-        "Max": 92.92
+        "Median": 98.32,
+        "Min": 98.02,
+        "Max": 106.25
+      },
+      "RiskManagedCycleNs": {
+        "Median": 334.65,
+        "Min": 299.87,
+        "Max": 355.41
+      },
+      "PolicyRiskCycleNs": {
+        "Median": 578.85,
+        "Min": 543.24,
+        "Max": 669.51
       }
     },
     {
       "RestingOrders": 10000,
       "AddCancelCycleNs": {
-        "Median": 84.67,
-        "Min": 80.18,
-        "Max": 91.12
+        "Median": 78.62,
+        "Min": 77.16,
+        "Max": 79.8
       },
       "CancelAddCycleNs": {
-        "Median": 81.78,
-        "Min": 76.51,
-        "Max": 82.46
+        "Median": 84.84,
+        "Min": 83.21,
+        "Max": 88.73
       },
       "MatchReplenishCycleNs": {
-        "Median": 88.64,
-        "Min": 88.53,
-        "Max": 89.19
+        "Median": 107.91,
+        "Min": 102.41,
+        "Max": 113.79
+      },
+      "RiskManagedCycleNs": {
+        "Median": 300.86,
+        "Min": 294.86,
+        "Max": 302.81
+      },
+      "PolicyRiskCycleNs": {
+        "Median": 625.12,
+        "Min": 586.65,
+        "Max": 671.59
       }
     },
     {
       "RestingOrders": 100000,
       "AddCancelCycleNs": {
-        "Median": 72.63,
-        "Min": 71.94,
-        "Max": 74.65
+        "Median": 99.87,
+        "Min": 77.75,
+        "Max": 114.93
       },
       "CancelAddCycleNs": {
-        "Median": 117.06,
-        "Min": 106.49,
-        "Max": 133.4
+        "Median": 120.87,
+        "Min": 114.64,
+        "Max": 176.88
       },
       "MatchReplenishCycleNs": {
-        "Median": 98.7,
-        "Min": 96.09,
-        "Max": 101.27
+        "Median": 103.01,
+        "Min": 101.38,
+        "Max": 104.96
+      },
+      "RiskManagedCycleNs": {
+        "Median": 364.49,
+        "Min": 312.71,
+        "Max": 408.71
+      },
+      "PolicyRiskCycleNs": {
+        "Median": 560.93,
+        "Min": 554.25,
+        "Max": 624.2
       }
     }
   ]

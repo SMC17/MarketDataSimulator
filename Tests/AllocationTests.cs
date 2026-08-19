@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using MarketData.Common.Books;
 using MarketData.Common.Matching;
+using MarketData.Common.Risk;
 using Xunit;
 
 namespace MarketData.Tests
@@ -87,6 +88,66 @@ namespace MarketData.Tests
             var bytes = BytesPerIteration(Cycle, warmupIterations: 20_000, iterations: 200_000);
 
             Assert.True(bytes == 0, $"expected zero allocation per match cycle, measured {bytes} bytes");
+        }
+
+        [Fact]
+        public void SteadyStateRiskManagedEntryAllocatesNothing()
+        {
+            var risk = new PreTradeRiskEngine();
+            risk.ConfigureAccount(1, RiskLimits.Unbounded);
+            var book = new RiskManagedOrderBook(1, -PriceBand, PriceBand, risk);
+            ulong nextId = 1;
+
+            void Cycle(int i)
+            {
+                var id = nextId++;
+                var result = book.Submit(1, id, Side.Bid, OrderType.Limit,
+                    TimeInForce.GoodTilCrossing, -1, 100, null);
+
+                if (result.Rejected || book.Cancel(1, id, null) != OrderActionResult.Applied)
+                    throw new InvalidOperationException("risk-managed cycle diverged");
+            }
+
+            var bytes = BytesPerIteration(Cycle, warmupIterations: 20_000,
+                iterations: 200_000);
+
+            Assert.True(bytes == 0,
+                $"expected zero allocation per risk-managed entry cycle, measured {bytes} bytes");
+        }
+
+        [Fact]
+        public void SteadyStatePolicyAndExecutionEntryAllocatesNothing()
+        {
+            var limits = new RiskLimits(1_000, 1_000_000, 10_000, 1_000_000, 1_000, 10_000);
+            var risk = new PreTradeRiskEngine();
+            risk.ConfigureAccount(1, limits);
+
+            var gate = new PreTradeRiskGate();
+            gate.Register("P", new ParticipantLimits(
+                MaxOrderQuantity: 1_000, MaxOrderNotional: 1_000_000,
+                MaxNetPosition: 1_000, CreditLimit: 1_000_000,
+                MaxMessagesPerSecond: int.MaxValue, CollarBasisPoints: 0));
+            gate.GrantAll("P", Entitlement.All);
+
+            var book = new RiskManagedOrderBook(1, -PriceBand, PriceBand, risk, gate);
+            book.BindAccount(1, "P");
+            ulong nextId = 1;
+
+            void Cycle(int i)
+            {
+                var id = nextId++;
+                var result = book.Submit(1, id, Side.Bid, OrderType.Limit,
+                    TimeInForce.GoodTilCrossing, -1, 100, null);
+
+                if (result.Rejected || book.Cancel(1, id, null) != OrderActionResult.Applied)
+                    throw new InvalidOperationException("composite risk cycle diverged");
+            }
+
+            var bytes = BytesPerIteration(Cycle, warmupIterations: 20_000,
+                iterations: 200_000);
+
+            Assert.True(bytes == 0,
+                $"expected zero allocation per composite entry cycle, measured {bytes} bytes");
         }
 
         [Fact]
