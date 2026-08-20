@@ -1,0 +1,58 @@
+[
+  {
+    "Kind": "gate",
+    "Case": "accept, no collar",
+    "NanosecondsPerCheck": 102.3,
+    "ChecksPerSecond": 9777905,
+    "BytesPerCheck": 0
+  },
+  {
+    "Kind": "gate",
+    "Case": "accept, with price collar",
+    "NanosecondsPerCheck": 102.5,
+    "ChecksPerSecond": 9755193,
+    "BytesPerCheck": 0
+  },
+  {
+    "Kind": "gate",
+    "Case": "reject, unknown participant",
+    "NanosecondsPerCheck": 29.1,
+    "ChecksPerSecond": 34343372,
+    "BytesPerCheck": 0
+  },
+  {
+    "Kind": "gate",
+    "Case": "reject, oversized",
+    "NanosecondsPerCheck": 44.4,
+    "ChecksPerSecond": 22529373,
+    "BytesPerCheck": 0
+  },
+  {
+    "Kind": "gate",
+    "Case": "reject, global kill engaged",
+    "NanosecondsPerCheck": 18.9,
+    "ChecksPerSecond": 52803050,
+    "BytesPerCheck": 0
+  },
+  {
+    "Kind": "contention",
+    "Threads": 1,
+    "NanosecondsPerCheck": 119,
+    "ChecksPerSecond": 8402825,
+    "ScalingVersusSingleThread": 1
+  },
+  {
+    "Kind": "contention",
+    "Threads": 2,
+    "NanosecondsPerCheck": 107.9,
+    "ChecksPerSecond": 9264372,
+    "ScalingVersusSingleThread": 1.1
+  },
+  {
+    "Kind": "contention",
+    "Threads": 4,
+    "NanosecondsPerCheck": 204.7,
+    "ChecksPerSecond": 4884616,
+    "ScalingVersusSingleThread": 0.58
+  }
+]

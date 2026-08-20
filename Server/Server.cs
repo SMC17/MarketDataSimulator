@@ -9,8 +9,10 @@ using System.Net;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using MarketData.Common.Availability;
 using MarketData.Common.Durability;
 using MarketData.Common.Feed;
+using MarketData.Common.Time;
 
 namespace MarketData.Server
 {
@@ -76,8 +78,36 @@ namespace MarketData.Server
 
         public IReadOnlyCollection<int> InstrumentIds => _orderbooks.Keys;
 
+        /// <summary>
+        /// Records what this host can actually measure and control, once, at start-up.
+        /// </summary>
+        /// <remarks>
+        /// Printed rather than assumed because every latency figure this process emits is bounded
+        /// by the clock that produced it, and every placement claim is bounded by what the cgroup
+        /// permits. A run whose log does not say which host it was on is a run whose numbers cannot
+        /// be compared with any other.
+        /// </remarks>
+        private static void ReportEnvironment()
+        {
+            var clock = UncertainClock.Detect();
+            var placement = ProcessorPlacement.Detect();
+
+            Console.WriteLine(
+                $"ENV clockSource={clock.Source} clockUncertainty={clock.UncertaintyNanoseconds}ns " +
+                $"processors={placement.LogicalProcessors} allowed={placement.AllowedProcessors.Count} " +
+                $"numaNodes={placement.NumaNodes} canPin={placement.CanPinThreads}");
+
+            Console.WriteLine($"ENV note: {placement.Notes}");
+            Console.WriteLine(
+                "ENV note: cross-host clock agreement is unmeasured here; no PTP grandmaster or " +
+                "NIC hardware timestamping is available, so one-way latency across hosts is not " +
+                "a claim this process can support.");
+        }
+
         public async Task RunAsync(CancellationToken token)
         {
+            ReportEnvironment();
+
             await _service.StartAsync().ConfigureAwait(false);
 
             Console.WriteLine(
@@ -145,11 +175,53 @@ namespace MarketData.Server
                     $"dropped={current.DroppedUpdates} failed={current.FailedSends} " +
                     $"outQueued={current.OutboundQueued} outMax={current.MaxOutboundQueued}");
 
+                ReportServiceLevel(current, stopwatch);
+
                 previous = current;
             }
 
             var final = _service.GetStatistics();
             Console.WriteLine($"FINAL published={final.PublishedUpdates} disseminated={final.DisseminatedUpdates} sent={final.SentMessages} dropped={final.DroppedUpdates} failed={final.FailedSends}");
+        }
+
+        /// <summary>
+        /// Emits the delivery objective's budget and burn rate on its own line.
+        /// </summary>
+        /// <remarks>
+        /// A separate line on purpose: the STATS line is parsed by the benchmark harness, and
+        /// changing its shape would silently invalidate the recorded transport results. Adding a
+        /// field to a format something else is reading is how a measurement record quietly breaks.
+        /// <para>
+        /// Burn rate rather than a met/missed flag, because "are we meeting it" is answerable yes
+        /// or no while telling you nothing about how much room is left. A burn above 1 means the
+        /// current failure rate exhausts the budget before the window closes.
+        /// </para>
+        /// </remarks>
+        private void ReportServiceLevel(OrderbookServiceStatistics current, Stopwatch sinceStart)
+        {
+            var configured = _config.ServiceLevel;
+
+            if (configured is null || !configured.Enabled)
+                return;
+
+            _slo ??= new ServiceLevelObjective("delivery", configured.DeliveryObjective,
+                TimeSpan.FromSeconds(configured.WindowSeconds));
+
+            // Everything the engine published had to reach somebody; what did not is the failure.
+            var total = current.PublishedUpdates;
+            var failures = current.DroppedUpdates + current.FailedSends;
+
+            if (total <= 0)
+                return;
+
+            var consumed = _slo.BudgetConsumed(total, failures);
+            var burn = _slo.BurnRate(total, failures, _uptime.Elapsed);
+            var status = new SloStatus(_slo, total, failures, consumed, burn);
+
+            Console.WriteLine(
+                $"SLO objective={_slo.Objective:P3} window={_slo.Window.TotalSeconds:0}s " +
+                $"published={total} failed={failures} budgetUsed={consumed * 100:0.00}% " +
+                $"burn={burn:0.00}x met={status.Met} willBreach={status.WillBreach}");
         }
 
         public OrderbookSnapshotUpdate GetSnapshot(int instrumentId)
@@ -168,6 +240,8 @@ namespace MarketData.Server
             _service.Dispose();
         }
 
+        private ServiceLevelObjective _slo;
+        private readonly Stopwatch _uptime = Stopwatch.StartNew();
         private readonly ServerConfiguration _config = null;
         private readonly IOrderbookService _service = null;
         private readonly Dictionary<int, Orderbook> _orderbooks = new Dictionary<int, Orderbook>();
