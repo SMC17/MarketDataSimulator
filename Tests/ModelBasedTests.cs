@@ -390,7 +390,7 @@ namespace MarketData.Tests
                 });
         }
 
-        private static Dictionary<int, IOrderBook> Rebuild(string directory, string checkpointPath,
+        private static Dictionary<int, IOrderBook> Rebuild(string directory, string? checkpointPath,
             Func<int, IOrderBook> make)
         {
             var books = new Dictionary<int, IOrderBook>();
