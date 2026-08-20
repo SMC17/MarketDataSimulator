@@ -25,7 +25,8 @@ namespace MarketData.Server
 
             foreach (var instrument in config.Instruments)
                 _orderbooks.Add(instrument.Id,
-                    new Orderbook(instrument, _service.RegisterProducer(), config.PriceBand, config.Seed));
+                    new Orderbook(instrument, _service.RegisterProducer(), config.PriceBand,
+                        config.Seed, config.Risk));
         }
 
         /// <summary>Selects gRPC fan-out or multicast without changing the matching path.</summary>
