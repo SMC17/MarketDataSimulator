@@ -31,17 +31,51 @@ namespace MarketData.Tests.Framework
         public SubmitResult Submit(ulong orderId, Side side, OrderType type, TimeInForce timeInForce,
             int price, uint quantity, int minPrice, int maxPrice, ICollection<MarketEvent> events)
         {
-            if (quantity == 0 || _orders.Any(o => o.Id == orderId) ||
-                (type == OrderType.Limit && (price < minPrice || price > maxPrice)))
+            if (orderId == 0 || quantity == 0 || (byte)side > (byte)Side.Ask ||
+                (byte)type > (byte)OrderType.MarketToLimit ||
+                (byte)timeInForce > (byte)TimeInForce.GoodTilCrossing ||
+                _orders.Any(o => o.Id == orderId) ||
+                (type == OrderType.Limit && (price < minPrice || price > maxPrice)) ||
+                (type == OrderType.MarketToLimit && timeInForce != TimeInForce.GoodTilCancel) ||
+                (timeInForce == TimeInForce.GoodTilCrossing && type != OrderType.Limit))
             {
                 events?.Add(MarketEvent.Rejected(orderId, side, price, quantity));
                 return new SubmitResult(orderId, 0, 0, true);
             }
 
-            var limit = type == OrderType.Market ? (side == Side.Bid ? maxPrice : minPrice) : price;
+            var limit = price;
+            var restingPrice = price;
+
+            if (type == OrderType.Market)
+            {
+                limit = side == Side.Bid ? maxPrice : minPrice;
+            }
+            else if (type == OrderType.MarketToLimit)
+            {
+                var touch = _orders
+                    .Where(o => o.Side != side)
+                    .OrderBy(o => side == Side.Bid ? o.Price : -o.Price)
+                    .ThenBy(o => o.Sequence)
+                    .FirstOrDefault();
+
+                if (touch is null)
+                {
+                    events?.Add(MarketEvent.Rejected(orderId, side, price, quantity));
+                    return new SubmitResult(orderId, 0, 0, true);
+                }
+
+                limit = touch.Price;
+                restingPrice = limit;
+            }
 
             bool Crosses(Resting o) => o.Side != side &&
                 (side == Side.Bid ? o.Price <= limit : o.Price >= limit);
+
+            if (timeInForce == TimeInForce.GoodTilCrossing && _orders.Any(Crosses))
+            {
+                events?.Add(MarketEvent.Rejected(orderId, side, price, quantity));
+                return new SubmitResult(orderId, 0, 0, true);
+            }
 
             if (timeInForce == TimeInForce.FillOrKill)
             {
@@ -84,12 +118,13 @@ namespace MarketData.Tests.Framework
 
             var filled = quantity - remaining;
 
-            if (remaining == 0 || type == OrderType.Market || timeInForce != TimeInForce.GoodTilCancel)
+            if (remaining == 0 || type == OrderType.Market ||
+                timeInForce is TimeInForce.ImmediateOrCancel or TimeInForce.FillOrKill)
                 return new SubmitResult(orderId, filled, 0, false);
 
-            var rested = new Resting(orderId, side, price, ++_sequence) { Remaining = remaining };
+            var rested = new Resting(orderId, side, restingPrice, ++_sequence) { Remaining = remaining };
             _orders.Add(rested);
-            events?.Add(new MarketEvent(MarketEventType.Added, orderId, side, price, remaining, 0));
+            events?.Add(new MarketEvent(MarketEventType.Added, orderId, side, restingPrice, remaining, 0));
 
             return new SubmitResult(orderId, filled, remaining, false);
         }

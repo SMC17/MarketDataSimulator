@@ -4,6 +4,11 @@ using System.Collections.Generic;
 
 namespace MarketData.Common.Matching
 {
+    internal interface IExecutableOrderPredicate
+    {
+        bool Matches(Order order);
+    }
+
     /// <summary>
     /// An order-by-order limit order book with price-time priority matching.
     /// </summary>
@@ -141,37 +146,104 @@ namespace MarketData.Common.Matching
         public SubmitResult Submit(ulong orderId, Side side, OrderType type, TimeInForce timeInForce,
             int price, uint quantity, ICollection<MarketEvent> events)
         {
-            if (quantity == 0 || _orders.ContainsKey(orderId) || (type == OrderType.Limit && !InBand(price)))
+            if (!TryResolveSubmission(orderId, side, type, timeInForce, price, quantity,
+                    out var limit, out var restingPrice))
             {
                 events?.Add(MarketEvent.Rejected(orderId, side, price, quantity));
                 return new SubmitResult(orderId, 0, 0, Rejected: true);
             }
 
-            // A market order is a limit order priced through the whole book.
-            var limit = type == OrderType.Market
-                ? (side == Side.Bid ? MaxPrice : MinPrice)
-                : price;
+            return SubmitValidated(orderId, side, type, timeInForce, quantity, limit,
+                restingPrice, events);
+        }
 
-            // Fill-or-kill must be decided before anything is mutated, so ask the book what is
-            // available first rather than matching and unwinding.
-            if (timeInForce == TimeInForce.FillOrKill && AvailableAgainst(side, limit) < quantity)
-            {
-                events?.Add(MarketEvent.Rejected(orderId, side, price, quantity));
-                return new SubmitResult(orderId, 0, 0, Rejected: true);
-            }
-
+        internal SubmitResult SubmitValidated(ulong orderId, Side side, OrderType type,
+            TimeInForce timeInForce, uint quantity, int limit, int restingPrice,
+            ICollection<MarketEvent> events)
+        {
             var remaining = Match(orderId, side, limit, quantity, events);
             var filled = quantity - remaining;
 
             if (remaining == 0)
                 return new SubmitResult(orderId, filled, 0, Rejected: false);
 
-            // Anything that cannot rest ends here: market orders never rest, and IOC cancels.
-            if (type == OrderType.Market || timeInForce != TimeInForce.GoodTilCancel)
+            // Market, IOC, and FOK remainders never rest. GTX is a resting instruction after its
+            // entry-time non-crossing check succeeds.
+            if (type == OrderType.Market || timeInForce is TimeInForce.ImmediateOrCancel or
+                TimeInForce.FillOrKill)
                 return new SubmitResult(orderId, filled, 0, Rejected: false);
 
-            Rest(orderId, side, price, remaining, events);
+            Rest(orderId, side, restingPrice, remaining, events);
             return new SubmitResult(orderId, filled, remaining, Rejected: false);
+        }
+
+        internal bool TryResolveSubmission(ulong orderId, Side side, OrderType type,
+            TimeInForce timeInForce, int price, uint quantity, out int limit,
+            out int restingPrice)
+        {
+            limit = price;
+            restingPrice = price;
+
+            if (orderId == 0 || quantity == 0 || (byte)side > (byte)Side.Ask ||
+                (byte)type > (byte)OrderType.MarketToLimit ||
+                (byte)timeInForce > (byte)TimeInForce.GoodTilCrossing ||
+                _orders.ContainsKey(orderId) ||
+                (type == OrderType.Limit && !InBand(price)) ||
+                (type == OrderType.MarketToLimit && timeInForce != TimeInForce.GoodTilCancel) ||
+                (timeInForce == TimeInForce.GoodTilCrossing && type != OrderType.Limit))
+                return false;
+
+            if (type == OrderType.Market)
+            {
+                // A market order is a non-resting limit priced through the whole book.
+                limit = side == Side.Bid ? MaxPrice : MinPrice;
+            }
+            else if (type == OrderType.MarketToLimit)
+            {
+                var opposite = side == Side.Bid ? Side.Ask : Side.Bid;
+
+                if (!TryGetBest(opposite, out limit, out _))
+                    return false;
+
+                restingPrice = limit;
+            }
+
+            if (timeInForce == TimeInForce.GoodTilCrossing && WouldCross(side, limit))
+                return false;
+
+            // Fill-or-kill is decided before mutation; matching never needs an unwind path.
+            return timeInForce != TimeInForce.FillOrKill ||
+                AvailableAgainst(side, limit) >= quantity;
+        }
+
+        internal bool WouldExecute<TPredicate>(Side side, int limit, uint quantity,
+            ref TPredicate predicate)
+            where TPredicate : struct, IExecutableOrderPredicate
+        {
+            var opposite = side == Side.Bid ? Side.Ask : Side.Bid;
+            var levels = _levels[(int)opposite];
+            var slot = _index.Touch(opposite);
+            var remaining = quantity;
+
+            while (slot != PriceIndex.None && remaining != 0)
+            {
+                var level = levels[slot];
+                if (!Crosses(side, level.Price, limit))
+                    return false;
+
+                for (var order = level.Head; order is not null && remaining != 0;
+                    order = order.Next)
+                {
+                    if (predicate.Matches(order))
+                        return true;
+
+                    remaining -= Math.Min(remaining, order.Remaining);
+                }
+
+                slot = _index.Outward(opposite, slot);
+            }
+
+            return false;
         }
 
         /// <summary>Removes a resting order. O(1).</summary>
@@ -294,6 +366,9 @@ namespace MarketData.Common.Matching
                 if (!Crosses(side, level.Price, limit))
                     break;
 
+                if (available > ulong.MaxValue - level.TotalQuantity)
+                    return ulong.MaxValue;
+
                 available += level.TotalQuantity;
                 slot = _index.Outward(opposite, slot);
             }
@@ -304,6 +379,12 @@ namespace MarketData.Common.Matching
         /// <summary>True when an aggressor on <paramref name="side"/> would accept <paramref name="restingPrice"/>.</summary>
         private static bool Crosses(Side side, int restingPrice, int limit)
             => side == Side.Bid ? restingPrice <= limit : restingPrice >= limit;
+
+        private bool WouldCross(Side side, int limit)
+        {
+            var opposite = side == Side.Bid ? Side.Ask : Side.Bid;
+            return TryGetBest(opposite, out var price, out _) && Crosses(side, price, limit);
+        }
 
         private void Rest(ulong orderId, Side side, int price, uint quantity, ICollection<MarketEvent> events)
         {

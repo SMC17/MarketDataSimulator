@@ -241,11 +241,13 @@ def v2_matching():
     rows = []
     for row in load("matching-v2.json")["Results"]:
         values = []
-        for key in ("AddCancelCycleNs", "CancelAddCycleNs", "MatchReplenishCycleNs"):
+        for key in ("AddCancelCycleNs", "CancelAddCycleNs", "MatchReplenishCycleNs",
+                    "RiskManagedCycleNs", "PolicyRiskCycleNs"):
             value = row[key]
             values.append(f"{measurement(value):.1f} ns")
         rows.append([f"{row['RestingOrders']:,}", *values])
-    return table(["Resting orders", "Add + cancel", "Cancel + add", "Match + replenish"], rows)
+    return table(["Resting orders", "Add + cancel", "Cancel + add", "Match + replenish",
+                  "Execution risk + book", "Policy + execution + book"], rows)
 
 
 def v2_books():
@@ -327,6 +329,12 @@ def v2_headline():
          f"{queue_row['BytesPerItem']:.3f} B/item including harness setup"],
         [f"Matching at {matching_row['RestingOrders']:,} resting orders",
          f"{measurement(matching_row['MatchReplenishCycleNs']):.1f} ns/cycle median", "state preserving"],
+        [f"Risk-gated entry at {matching_row['RestingOrders']:,} resting orders",
+         f"{measurement(matching_row['RiskManagedCycleNs']):.1f} ns/cycle median",
+         "reserve + post-only add + cancel"],
+        [f"Full-policy entry at {matching_row['RestingOrders']:,} resting orders",
+         f"{measurement(matching_row['PolicyRiskCycleNs']):.1f} ns/cycle median",
+         "policy + execution reservation + book"],
         ["Committed NASDAQ samples", f"{transitions:,} transitions per implementation",
          "exact" if exact else "mismatch present"],
         ["Seal + journal feed packet", f"{journal['MedianNanoseconds']:,.1f} ns median",
