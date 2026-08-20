@@ -30,8 +30,27 @@ namespace MarketData.Server.Configuration
         public int RetransmissionPort { get; set; }
     }
 
+    /// <summary>
+    /// The delivery objective the server measures itself against while running.
+    /// </summary>
+    /// <remarks>
+    /// Stated over an explicit window, because an availability target without one is not a
+    /// commitment: the same percentage means an hour a year or four minutes a day depending on
+    /// what it is measured over.
+    /// </remarks>
+    public sealed class ServiceLevelConfiguration
+    {
+        public bool Enabled { get; set; } = true;
+
+        /// <summary>Share of published updates that must reach subscribers.</summary>
+        public double DeliveryObjective { get; set; } = 0.999;
+
+        public double WindowSeconds { get; set; } = 3600;
+    }
+
     public sealed class ServerConfiguration
     {
+        public ServiceLevelConfiguration ServiceLevel { get; set; } = new ServiceLevelConfiguration();
         public int Port { get; set; } = 14000;
         public IReadOnlyList<Instrument> Instruments { get; set; } = Array.Empty<Instrument>();
         public bool VerboseLogging { get; set; } = true;
@@ -69,6 +88,24 @@ namespace MarketData.Server.Configuration
             if (StatisticsIntervalSeconds * 1_000 > MaxTimerMilliseconds ||
                 RunForSeconds * 1_000 > MaxTimerMilliseconds)
                 throw new InvalidDataException("timer intervals exceed the runtime timer limit");
+            if (ServiceLevel is not null && ServiceLevel.Enabled)
+            {
+                if (!double.IsFinite(ServiceLevel.DeliveryObjective) ||
+                    ServiceLevel.DeliveryObjective <= 0 || ServiceLevel.DeliveryObjective > 1)
+                {
+                    throw new InvalidDataException(
+                        $"{nameof(ServiceLevel)}.{nameof(ServiceLevelConfiguration.DeliveryObjective)} " +
+                        "must be in (0, 1]");
+                }
+
+                if (!double.IsFinite(ServiceLevel.WindowSeconds) || ServiceLevel.WindowSeconds <= 0)
+                {
+                    throw new InvalidDataException(
+                        $"{nameof(ServiceLevel)}.{nameof(ServiceLevelConfiguration.WindowSeconds)} " +
+                        "must be positive and finite");
+                }
+            }
+
             if (Instruments is null || Instruments.Count == 0)
                 throw new InvalidDataException("at least one instrument is required");
 
