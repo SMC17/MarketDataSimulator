@@ -57,6 +57,16 @@ namespace MarketData.Common.Risk
         public PreTradeRiskEngine Risk => _risk;
 
         /// <summary>
+        /// The book beneath the risk layer, for read-only inspection.
+        /// </summary>
+        /// <remarks>
+        /// Exposed for depth reads and touch queries, which carry no risk consequence. Submitting
+        /// or cancelling through this reference would bypass reservation accounting entirely and
+        /// leave the engine's exposure disagreeing with the book, so those go through this type.
+        /// </remarks>
+        public LimitOrderBook UnderlyingBook => _book;
+
+        /// <summary>
         /// Binds a sequencer-local numeric account to the policy gate's authenticated participant.
         /// One participant maps to one account within this book.
         /// </summary>
@@ -253,6 +263,18 @@ namespace MarketData.Common.Risk
 
             if (killed && cancelResting)
                 CancelOrders(_risk.ActiveOrderIds(InstrumentId), events);
+        }
+
+        /// <summary>Empties the book and unwinds every reservation it was holding.</summary>
+        /// <remarks>
+        /// Both halves, and in that order. Clearing the book alone would leave the risk engine
+        /// charging accounts for orders that no longer exist - exposure that can never be released
+        /// because nothing references it any more.
+        /// </remarks>
+        public void Clear()
+        {
+            _book.Clear();
+            _risk.ReleaseEverything();
         }
 
         public Order Find(ulong orderId) => _book.Find(orderId);

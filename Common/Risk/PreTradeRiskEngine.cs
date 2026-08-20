@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using MarketData.Common.Books;
 
 namespace MarketData.Common.Risk
@@ -207,6 +208,21 @@ namespace MarketData.Common.Risk
             var exposure = account.Instruments[reservation.InstrumentId];
             ReleaseCore(ref reservation, account, exposure, quantity);
             return true;
+        }
+
+        /// <summary>
+        /// Releases every outstanding reservation.
+        /// </summary>
+        /// <remarks>
+        /// For resetting a book wholesale. Releasing each order individually rather than clearing
+        /// the map: exposure is accumulated per account and per instrument, and dropping the order
+        /// map without unwinding it would leave that exposure charged against accounts forever,
+        /// which is a silent and permanent loss of credit capacity.
+        /// </remarks>
+        public void ReleaseEverything()
+        {
+            foreach (var orderId in _orders.Keys.ToArray())
+                TryReleaseAll(orderId);
         }
 
         public bool TryReleaseAll(ulong orderId)

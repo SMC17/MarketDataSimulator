@@ -1,6 +1,8 @@
 using MarketData.Common;
 using MarketData.Common.Books;
 using MarketData.Common.Matching;
+using MarketData.Common.Risk;
+using MarketData.Server.Configuration;
 using MarketData.Common.Server;
 using System;
 using System.Collections.Generic;
@@ -15,16 +17,58 @@ namespace MarketData.Server
     /// </summary>
     internal sealed class Orderbook : IDisposable
     {
-        public Orderbook(Instrument instrument, IUpdateProducer producer, int priceBand, int seed)
+        public Orderbook(Instrument instrument, IUpdateProducer producer, int priceBand, int seed,
+            RiskConfiguration risk = null)
         {
             _instrument = instrument;
             _depth = instrument.Specifications.Depth;
-            _flow = new OrderFlowSimulator(new LimitOrderBook(-priceBand, priceBand));
+            _flow = CreateFlow(instrument, priceBand, risk);
             _scratch = new PriceLevel[_depth];
 
             _spinTask = GenerateUpdatesAsync(new WeakReference<Orderbook>(this), instrument, producer,
                 unchecked(seed * 31 + instrument.Id * 7919), _disposedSource);
         }
+
+        /// <summary>
+        /// Builds the generator, optionally behind the pre-trade risk layer.
+        /// </summary>
+        /// <remarks>
+        /// Two accounts, one per side, because a single account makes every match a self-trade and
+        /// the risk layer correctly refuses those - the book would fill with orders that can never
+        /// execute. Limits default to unbounded so the generated stream is identical to the
+        /// unmanaged one, which is what keeps every recorded transport measurement valid.
+        /// </remarks>
+        private static OrderFlowSimulator CreateFlow(Instrument instrument, int priceBand,
+            RiskConfiguration risk)
+        {
+            if (risk is null || !risk.Enabled)
+                return new OrderFlowSimulator(new LimitOrderBook(-priceBand, priceBand));
+
+            var limits = RiskLimits.Unbounded;
+
+            if (risk.MaxOrderQuantity > 0)
+                limits = limits with { MaxOrderQuantity = risk.MaxOrderQuantity };
+
+            if (risk.MaxAbsolutePosition > 0)
+                limits = limits with { MaxAbsolutePosition = risk.MaxAbsolutePosition };
+
+            if (risk.MaxActiveOrders > 0)
+                limits = limits with { MaxActiveOrders = risk.MaxActiveOrders };
+
+            var engine = new PreTradeRiskEngine();
+            engine.ConfigureAccount(BidAccount, limits);
+            engine.ConfigureAccount(AskAccount, limits);
+
+            var managed = new RiskManagedOrderBook(instrument.Id, -priceBand, priceBand, engine);
+            return new OrderFlowSimulator(managed, BidAccount, AskAccount);
+        }
+
+        /// <summary>Accounts standing in for the two sides of generated flow.</summary>
+        private const ulong BidAccount = 1;
+        private const ulong AskAccount = 2;
+
+        /// <summary>Orders the risk layer refused. Zero while limits admit everything.</summary>
+        public long RiskRejections => _flow.RiskRejections;
 
         /// <summary>
         /// Tick on which the generator wakes. Task.Delay cannot resolve sub-millisecond waits, so
