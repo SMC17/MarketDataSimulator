@@ -71,6 +71,9 @@ namespace MarketData.Common.Availability
         private long _epoch;
 
         public ulong NextEpoch() => (ulong)Interlocked.Increment(ref _epoch);
+
+        /// <summary>The highest token issued so far, for assertions. Does not allocate one.</summary>
+        public ulong NextEpochPeek() => (ulong)Interlocked.Read(ref _epoch);
     }
 
     /// <summary>
