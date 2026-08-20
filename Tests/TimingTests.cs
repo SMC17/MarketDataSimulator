@@ -160,8 +160,10 @@ namespace MarketData.Tests
             Assert.NotEmpty(capabilities.AllowedProcessors);
             Assert.False(string.IsNullOrWhiteSpace(capabilities.Notes));
 
-            // Allowed processors must be a subset of what exists.
-            Assert.True(capabilities.AllowedProcessors.Count <= capabilities.LogicalProcessors);
+            // Runtime parallelism can be quota-limited independently of the affinity mask.
+            Assert.All(capabilities.AllowedProcessors, processor => Assert.True(processor >= 0));
+            Assert.Equal(capabilities.AllowedProcessors.Count,
+                capabilities.AllowedProcessors.Distinct().Count());
         }
 
         [Fact]

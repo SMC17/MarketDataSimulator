@@ -102,18 +102,20 @@ Artifact: `bench/results/matching-v2.json`. Each value is the median over 200,00
 cycles and five trials.
 
 <!-- generated: v2-matching -->
-| Resting orders | Add + cancel | Cancel + add | Match + replenish |
-|---|---|---|---|
-| 100 | 91.5 ns | 102.4 ns | 88.7 ns |
-| 1,000 | 104.7 ns | 75.7 ns | 86.0 ns |
-| 10,000 | 84.7 ns | 81.8 ns | 88.6 ns |
-| 100,000 | 72.6 ns | 117.1 ns | 98.7 ns |
+| Resting orders | Add + cancel | Cancel + add | Match + replenish | Execution risk + book | Policy + execution + book |
+|---|---|---|---|---|---|
+| 100 | 96.3 ns | 123.7 ns | 101.3 ns | 326.6 ns | 590.2 ns |
+| 1,000 | 120.0 ns | 79.9 ns | 98.3 ns | 334.6 ns | 578.9 ns |
+| 10,000 | 78.6 ns | 84.8 ns | 107.9 ns | 300.9 ns | 625.1 ns |
+| 100,000 | 99.9 ns | 120.9 ns | 103.0 ns | 364.5 ns | 560.9 ns |
 <!-- /generated -->
 
 Each cycle contains two engine commands. Match-plus-replenish uses exact 50-share removals and
-same-price replacements. These values are not the latency of an isolated exchange command. Growth
-with population can reflect cache and TLB pressure even when the algorithmic operation count stays
-constant; hardware counters would be required to attribute it.
+same-price replacements. Execution risk adds directional reservation accounting and ownership.
+Full policy also runs participant lookup, entitlement, kill, quantity/notional, position, token
+bucket, and credit checks. Both risk paths have separate steady-state zero-allocation tests. These
+values are not isolated-command latency. Growth with population can reflect cache and TLB pressure;
+hardware counters would be required to attribute it.
 
 ## Aggregated books
 

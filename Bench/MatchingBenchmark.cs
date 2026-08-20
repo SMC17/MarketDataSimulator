@@ -1,5 +1,6 @@
 using MarketData.Common.Books;
 using MarketData.Common.Matching;
+using MarketData.Common.Risk;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -41,8 +42,9 @@ namespace MarketData.Bench
             Console.WriteLine($"Matching engine micro-benchmark: {Operations:N0} cycles, median of {Trials} trials");
             Console.WriteLine($"Price band +/-{PriceBand}, server GC: {System.Runtime.GCSettings.IsServerGC}");
             Console.WriteLine();
-            Console.WriteLine($"{"Resting orders",15} {"add+cancel",12} {"cancel+add",13} {"match+repl",12}");
-            Console.WriteLine(new string('-', 57));
+            Console.WriteLine($"{"Resting orders",15} {"add+cancel",12} {"cancel+add",13} " +
+                              $"{"match+repl",12} {"exec+risk",12} {"full policy",12}");
+            Console.WriteLine(new string('-', 83));
 
             var results = new List<MatchingResult>();
 
@@ -106,11 +108,14 @@ namespace MarketData.Bench
                 var add = MeasureAdd(size);
                 var cancel = MeasureCancel(size);
                 var match = MeasureMatch(size);
+                var risk = MeasureRiskManaged(size, includePolicy: false);
+                var policy = MeasureRiskManaged(size, includePolicy: true);
                 if (results is null)
                     continue;
 
-                Console.WriteLine($"{size,15:N0} {add.Median,12:F1} {cancel.Median,13:F1} {match.Median,12:F1}");
-                results.Add(new MatchingResult(size, add, cancel, match));
+                Console.WriteLine($"{size,15:N0} {add.Median,12:F1} {cancel.Median,13:F1} " +
+                                  $"{match.Median,12:F1} {risk.Median,12:F1} {policy.Median,12:F1}");
+                results.Add(new MatchingResult(size, add, cancel, match, risk, policy));
             }
         }
 
@@ -245,6 +250,71 @@ namespace MarketData.Bench
             }, Operations);
         }
 
+        private static Measurement MeasureRiskManaged(int size, bool includePolicy)
+        {
+            var risk = new PreTradeRiskEngine();
+            var executionLimits = includePolicy
+                ? new RiskLimits(uint.MaxValue, long.MaxValue, ulong.MaxValue, long.MaxValue,
+                    long.MaxValue, int.MaxValue)
+                : RiskLimits.Unbounded;
+            risk.ConfigureAccount(1, executionLimits);
+
+            PreTradeRiskGate policy = null;
+            if (includePolicy)
+            {
+                policy = new PreTradeRiskGate();
+                policy.Register("BENCH", new ParticipantLimits(
+                    uint.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue,
+                    int.MaxValue, CollarBasisPoints: 0));
+                policy.GrantAll("BENCH", Entitlement.All);
+            }
+
+            var book = new RiskManagedOrderBook(1, -PriceBand, PriceBand, risk, policy);
+            if (includePolicy)
+                book.BindAccount(1, "BENCH");
+            var random = new Random(17);
+            ulong nextId = 1;
+
+            for (var i = 0; i < size; i++)
+            {
+                var side = (i & 1) == 0 ? Side.Bid : Side.Ask;
+                var price = side == Side.Bid ? -random.Next(1, PriceBand) : random.Next(1, PriceBand);
+                var result = book.Submit(1, nextId++, side, OrderType.Limit,
+                    TimeInForce.GoodTilCrossing, price, 100, null);
+
+                if (result.Rejected)
+                    throw new InvalidOperationException("risk benchmark seed was rejected");
+            }
+
+            var sides = new Side[Operations];
+            var prices = new int[Operations];
+            for (var i = 0; i < Operations; i++)
+            {
+                sides[i] = (i & 1) == 0 ? Side.Bid : Side.Ask;
+                prices[i] = sides[i] == Side.Bid
+                    ? -random.Next(1, PriceBand)
+                    : random.Next(1, PriceBand);
+            }
+
+            return Measure(() =>
+            {
+                var id = nextId;
+
+                for (var i = 0; i < Operations; i++)
+                {
+                    var result = book.Submit(1, id, sides[i], OrderType.Limit,
+                        TimeInForce.GoodTilCrossing, prices[i], 100, null);
+
+                    if (result.Rejected || book.Cancel(1, id, null) != OrderActionResult.Applied)
+                        throw new InvalidOperationException("risk benchmark cycle diverged");
+                    id++;
+                }
+
+                nextId = id;
+                return book.OrderCount;
+            }, Operations);
+        }
+
         private static Measurement Measure(Func<int> body, int operations)
         {
             for (var i = 0; i < WarmupTrials; i++)
@@ -274,7 +344,8 @@ namespace MarketData.Bench
 
         private sealed record Measurement(double Median, double Min, double Max);
         private sealed record MatchingResult(int RestingOrders, Measurement AddCancelCycleNs,
-            Measurement CancelAddCycleNs, Measurement MatchReplenishCycleNs);
+            Measurement CancelAddCycleNs, Measurement MatchReplenishCycleNs,
+            Measurement RiskManagedCycleNs, Measurement PolicyRiskCycleNs);
 
         private sealed record MatchingReport(DateTimeOffset TimestampUtc, string Runtime,
             string OperatingSystem, string Architecture, int LogicalProcessors, bool ServerGc,

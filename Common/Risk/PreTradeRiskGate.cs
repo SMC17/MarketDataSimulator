@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using MarketData.Common.Books;
+using MarketData.Common.Matching;
 using MarketData.Common.Reference;
 
 namespace MarketData.Common.Risk
@@ -31,12 +32,20 @@ namespace MarketData.Common.Risk
         int InstrumentId,
         Side Side,
         int Price,
-        uint Quantity)
+        uint Quantity,
+        OrderType Type = OrderType.Limit)
     {
         /// <summary>Signed quantity: positive buys, negative sells.</summary>
         public long SignedQuantity => Side == Side.Bid ? Quantity : -(long)Quantity;
 
-        public long Notional => (long)Price * Quantity;
+        public long Notional
+        {
+            get
+            {
+                var value = (Int128)Price * Quantity;
+                return (long)(value < 0 ? -value : value);
+            }
+        }
     }
 
     /// <summary>
@@ -67,6 +76,8 @@ namespace MarketData.Common.Risk
         private readonly Func<DateTime> _clock;
 
         private int _globalKill;
+        private long _accepted;
+        private long _rejected;
 
         public PreTradeRiskGate(
             InstrumentMaster reference = null,
@@ -81,17 +92,23 @@ namespace MarketData.Common.Risk
         /// <summary>Engaged, everything stops. The venue-wide stop.</summary>
         public bool GlobalKillEngaged => Volatile.Read(ref _globalKill) != 0;
 
-        public long Accepted { get; private set; }
-        public long Rejected { get; private set; }
+        public long Accepted => Interlocked.Read(ref _accepted);
+        public long Rejected => Interlocked.Read(ref _rejected);
 
         public event Action<OrderRequest, RiskDecision> Rejection;
 
         public ParticipantRiskState Register(string participantId, ParticipantLimits limits = null)
-            => _participants.GetOrAdd(participantId,
+        {
+            if (string.IsNullOrWhiteSpace(participantId))
+                throw new ArgumentException("A participant id is required.", nameof(participantId));
+
+            return _participants.GetOrAdd(participantId,
                 id => new ParticipantRiskState(id, limits ?? ParticipantLimits.Default));
+        }
 
         public ParticipantRiskState StateOf(string participantId)
-            => _participants.TryGetValue(participantId, out var state) ? state : null;
+            => !string.IsNullOrEmpty(participantId) &&
+                _participants.TryGetValue(participantId, out var state) ? state : null;
 
         public void Grant(string participantId, int instrumentId, Entitlement entitlement)
             => _entitlements[(participantId, instrumentId)] = entitlement;
@@ -124,18 +141,24 @@ namespace MarketData.Common.Risk
         public bool ReleaseGlobalKill() => Interlocked.Exchange(ref _globalKill, 0) == 1;
 
         /// <summary>Runs every pre-trade check.</summary>
-        public RiskDecision Check(in OrderRequest order)
+        public RiskDecision Check(in OrderRequest order) => Check(order, order.Notional);
+
+        /// <summary>
+        /// Runs every check while reserving a caller-supplied conservative notional.
+        /// The submitted price still drives tick and collar validation.
+        /// </summary>
+        public RiskDecision Check(in OrderRequest order, long reservedNotional)
         {
-            var decision = Evaluate(order);
+            var decision = Evaluate(order, reservedNotional);
 
             if (decision.IsAccepted)
             {
-                Accepted++;
+                Interlocked.Increment(ref _accepted);
                 StateOf(order.ParticipantId)?.RecordAccepted();
             }
             else
             {
-                Rejected++;
+                Interlocked.Increment(ref _rejected);
                 StateOf(order.ParticipantId)?.RecordRejected();
                 Rejection?.Invoke(order, decision);
             }
@@ -143,10 +166,15 @@ namespace MarketData.Common.Risk
             return decision;
         }
 
-        private RiskDecision Evaluate(in OrderRequest order)
+        private RiskDecision Evaluate(in OrderRequest order, long reservedNotional)
         {
             if (GlobalKillEngaged)
                 return RiskDecision.Reject(RiskRejectReason.KillSwitchEngaged);
+
+            if (string.IsNullOrEmpty(order.ParticipantId) || order.InstrumentId <= 0 ||
+                (byte)order.Side > (byte)Side.Ask ||
+                (byte)order.Type > (byte)OrderType.MarketToLimit || reservedNotional < 0)
+                return RiskDecision.Reject(RiskRejectReason.InvalidOrder);
 
             if (!_participants.TryGetValue(order.ParticipantId, out var state))
                 return RiskDecision.Reject(RiskRejectReason.NotEntitled);
@@ -163,10 +191,12 @@ namespace MarketData.Common.Risk
             if (order.Quantity == 0 || order.Quantity > state.Limits.MaxOrderQuantity)
                 return RiskDecision.Reject(RiskRejectReason.OrderQuantityTooLarge, state.Limits.MaxOrderQuantity);
 
-            if (order.Notional > state.Limits.MaxOrderNotional)
+            if (reservedNotional > state.Limits.MaxOrderNotional)
                 return RiskDecision.Reject(RiskRejectReason.OrderNotionalTooLarge, state.Limits.MaxOrderNotional);
 
-            if (_reference is not null)
+            var priceValidated = order.Type == OrderType.Limit;
+
+            if (priceValidated && _reference is not null)
             {
                 var record = _reference.AsOf(order.InstrumentId, _clock());
 
@@ -180,7 +210,7 @@ namespace MarketData.Common.Risk
                 }
             }
 
-            if (state.Limits.CollarBasisPoints > 0 &&
+            if (priceValidated && state.Limits.CollarBasisPoints > 0 &&
                 _referencePrices.TryGetValue(order.InstrumentId, out var referencePrice) &&
                 referencePrice > 0)
             {
@@ -199,7 +229,7 @@ namespace MarketData.Common.Risk
             if (!state.TryConsumeRateToken())
                 return RiskDecision.Reject(RiskRejectReason.RateLimitExceeded, state.Limits.MaxMessagesPerSecond);
 
-            if (!state.TryReserveCredit(order.Notional))
+            if (!state.TryReserveCredit(reservedNotional))
                 return RiskDecision.Reject(RiskRejectReason.InsufficientCredit, state.AvailableCredit);
 
             return RiskDecision.Accepted;
@@ -209,14 +239,14 @@ namespace MarketData.Common.Risk
         public void OnOrderClosed(in OrderRequest order)
             => StateOf(order.ParticipantId)?.ReleaseCredit(order.Notional);
 
+        public void OnOrderClosed(string participantId, long reservedNotional)
+            => StateOf(participantId)?.ReleaseCredit(reservedNotional);
+
         /// <summary>Applies a fill to the participant's position.</summary>
         public void OnFill(string participantId, int instrumentId, long signedQuantity, long notional)
         {
             if (_participants.TryGetValue(participantId, out var state))
-            {
-                state.ApplyFill(instrumentId, signedQuantity);
-                state.ReleaseCredit(notional);
-            }
+                state.ApplyFillAndReleaseCredit(instrumentId, signedQuantity, notional);
         }
 
         /// <summary>Every participant currently killed, for a status page or an alert.</summary>
