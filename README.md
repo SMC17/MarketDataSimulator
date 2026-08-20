@@ -156,6 +156,9 @@ systems load generator; real market data remains the oracle for distribution-dep
 Earlier audience-scaling measurements are retained under a separate host and protocol boundary in
 [BENCHMARKS.md](BENCHMARKS.md#transport-scaling-pre-v2-generation).
 
+Porting this to real hardware, and what this environment could not measure, is in
+[PORTING.md](PORTING.md).
+
 ## Build and run
 
 ```bash

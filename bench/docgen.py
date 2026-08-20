@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS = ROOT / "bench/results"
-DOCUMENTS = [ROOT / "README.md", ROOT / "BENCHMARKS.md"]
+DOCUMENTS = [ROOT / "README.md", ROOT / "BENCHMARKS.md", ROOT / "PORTING.md"]
 
 MIN_DELIVERY = 0.99
 MAX_OUTBOUND_QUEUE = 100
