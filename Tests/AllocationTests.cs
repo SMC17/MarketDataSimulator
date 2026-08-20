@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using MarketData.Common.Books;
+using MarketData.Common.Risk;
 using MarketData.Common.Matching;
 using Xunit;
 
@@ -36,6 +37,71 @@ namespace MarketData.Tests
                 action(i);
 
             return (GC.GetAllocatedBytesForCurrentThread() - before) / iterations;
+        }
+
+        /// <summary>
+        /// The pre-trade gate allocates nothing when it accepts.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="PreTradeRiskGate"/> claims this in its own documentation, and a claim about
+        /// allocation that nothing checks is a claim that quietly stops being true. The gate runs
+        /// once per order, so allocating here would hand the collector work proportional to message
+        /// rate, with the pauses landing on the order path - the one place that cannot absorb them.
+        /// <para>
+        /// The accept path specifically: rejections format nothing either, but they are rare and
+        /// the reason code is a value. What must not allocate is the case that happens millions of
+        /// times.
+        /// </para>
+        /// </remarks>
+        [Fact]
+        public void AcceptingAnOrderAllocatesNothing()
+        {
+            var gate = new PreTradeRiskGate();
+            gate.Register("P", new ParticipantLimits(
+                MaxOrderQuantity: uint.MaxValue,
+                MaxOrderNotional: long.MaxValue,
+                MaxNetPosition: long.MaxValue,
+                CreditLimit: long.MaxValue,
+                MaxMessagesPerSecond: int.MaxValue,
+                CollarBasisPoints: 0));
+            gate.GrantAll("P", Entitlement.All);
+
+            var order = new OrderRequest("P", 1, Side.Bid, 100, 10);
+
+            var bytes = BytesPerIteration(_ =>
+            {
+                var decision = gate.Check(order);
+
+                if (!decision.IsAccepted)
+                    throw new InvalidOperationException($"the gate rejected: {decision.Reason}");
+            }, warmupIterations: 10_000, iterations: 200_000);
+
+            Assert.Equal(0, bytes);
+        }
+
+        /// <summary>Rejecting allocates nothing either, so a hostile sender cannot induce churn.</summary>
+        /// <remarks>
+        /// Worth asserting separately: a gate that allocates only on rejection is a gate whose
+        /// garbage rate is controlled by whoever is sending the worst traffic.
+        /// </remarks>
+        [Fact]
+        public void RejectingAnOrderAllocatesNothing()
+        {
+            var gate = new PreTradeRiskGate();
+            gate.Register("P", new ParticipantLimits(MaxOrderQuantity: 1));
+            gate.GrantAll("P", Entitlement.All);
+
+            var oversized = new OrderRequest("P", 1, Side.Bid, 100, 1_000);
+
+            var bytes = BytesPerIteration(_ =>
+            {
+                var decision = gate.Check(oversized);
+
+                if (decision.IsAccepted)
+                    throw new InvalidOperationException("the gate should have rejected this order");
+            }, warmupIterations: 10_000, iterations: 200_000);
+
+            Assert.Equal(0, bytes);
         }
 
         [Fact]
