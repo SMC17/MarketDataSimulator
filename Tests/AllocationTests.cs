@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using MarketData.Common.Books;
 using MarketData.Common.Risk;
 using MarketData.Common.Matching;
-using MarketData.Common.Risk;
 using Xunit;
 
 namespace MarketData.Tests
