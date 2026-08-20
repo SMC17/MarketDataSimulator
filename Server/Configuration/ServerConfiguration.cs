@@ -48,8 +48,32 @@ namespace MarketData.Server.Configuration
         public double WindowSeconds { get; set; } = 3600;
     }
 
+    /// <summary>
+    /// Whether generated order flow passes the pre-trade risk layer, and under what limits.
+    /// </summary>
+    /// <remarks>
+    /// Off by default, and permissive when on. Every transport measurement on record was taken
+    /// against a particular generated stream, and the risk layer only leaves that stream unchanged
+    /// while its limits admit every order - which <c>RiskOnThePathTests</c> asserts event for
+    /// event. Tightening any limit here is a different experiment, not a tuning knob.
+    /// </remarks>
+    public sealed class RiskConfiguration
+    {
+        public bool Enabled { get; set; }
+
+        /// <summary>Largest single order. Zero means unbounded.</summary>
+        public uint MaxOrderQuantity { get; set; }
+
+        /// <summary>Largest absolute net position per instrument. Zero means unbounded.</summary>
+        public long MaxAbsolutePosition { get; set; }
+
+        /// <summary>Most orders an account may have resting at once. Zero means unbounded.</summary>
+        public int MaxActiveOrders { get; set; }
+    }
+
     public sealed class ServerConfiguration
     {
+        public RiskConfiguration Risk { get; set; } = new RiskConfiguration();
         public ServiceLevelConfiguration ServiceLevel { get; set; } = new ServiceLevelConfiguration();
         public int Port { get; set; } = 14000;
         public IReadOnlyList<Instrument> Instruments { get; set; } = Array.Empty<Instrument>();
@@ -104,6 +128,17 @@ namespace MarketData.Server.Configuration
                         $"{nameof(ServiceLevel)}.{nameof(ServiceLevelConfiguration.WindowSeconds)} " +
                         "must be positive and finite");
                 }
+            }
+
+            if (Risk is not null && Risk.Enabled)
+            {
+                if (Risk.MaxAbsolutePosition < 0)
+                    throw new InvalidDataException(
+                        $"{nameof(Risk)}.{nameof(RiskConfiguration.MaxAbsolutePosition)} must not be negative");
+
+                if (Risk.MaxActiveOrders < 0)
+                    throw new InvalidDataException(
+                        $"{nameof(Risk)}.{nameof(RiskConfiguration.MaxActiveOrders)} must not be negative");
             }
 
             if (Instruments is null || Instruments.Count == 0)
