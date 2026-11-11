@@ -8,21 +8,34 @@ cd "$(dirname "$0")/.."
 export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"; jobs -p | xargs -r kill 2>/dev/null || true' EXIT
+SERVER_PID=""
+stop() {
+  if [ -n "$SERVER_PID" ]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+    SERVER_PID=""
+  fi
+}
+cleanup() { stop; rm -rf "$WORK"; }
+trap cleanup EXIT
 
 dotnet build Server/Server.csproj -c Release --nologo -v quiet
 dotnet build Bench/Bench.csproj -c Release --nologo -v quiet
 
 server() {
-  ( cd Server/bin/Release/net8.0 && dotnet Server.dll "$1" > "$WORK/server.log" 2>&1 & )
+  ( cd Server/bin/Release/net10.0 && exec dotnet Server.dll "$1" ) > "$WORK/server.log" 2>&1 &
+  SERVER_PID=$!
   for _ in $(seq 1 60); do
     grep -qE "Listening on|Publishing to multicast" "$WORK/server.log" && return 0
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+      echo "server exited before readiness:"; cat "$WORK/server.log"; return 1
+    fi
     sleep 0.5
   done
   echo "server failed to start:"; cat "$WORK/server.log"; return 1
 }
 
-stop() { pkill -f "Server.dll" 2>/dev/null || true; sleep 1; }
+
 
 # ---- unicast gRPC ----
 cat > "$WORK/unicast.json" <<JSON
@@ -31,7 +44,7 @@ cat > "$WORK/unicast.json" <<JSON
     "Specifications": { "Depth": 10, "UpdatesPerSecond": 200, "SnapshotProbability": 0.05 } } ] }
 JSON
 server "$WORK/unicast.json"
-( cd Bench/bin/Release/net8.0 && dotnet Bench.dll --address http://127.0.0.1:14311 \
+( cd Bench/bin/Release/net10.0 && dotnet Bench.dll --address http://127.0.0.1:14311 \
     --subscribers 5 --instruments 1 --warmup 2 --duration 4 --out "$WORK/unicast.json.out" )
 stop
 
@@ -57,7 +70,7 @@ cat > "$WORK/multicast.json" <<JSON
     "Specifications": { "Depth": 10, "UpdatesPerSecond": 200, "SnapshotProbability": 0.05 } } ] }
 JSON
 server "$WORK/multicast.json"
-( cd Bench/bin/Release/net8.0 && dotnet Bench.dll multicast --group 239.7.7.9 --port 31009 \
+( cd Bench/bin/Release/net10.0 && dotnet Bench.dll multicast --group 239.7.7.9 --port 31009 \
     --redundant-group 239.7.7.10 --redundant-port 31010 \
     --subscribers 5 --warmup 2 --duration 4 --out "$WORK/multicast.json.out" )
 stop
