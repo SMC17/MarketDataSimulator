@@ -14,7 +14,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "10.0.x"
 
       - name: Restore
         run: dotnet restore MarketDataSimulator.sln
@@ -26,7 +26,10 @@ jobs:
         run: sha256sum --check data/sample/SHA256SUMS
 
       - name: Test
-        run: dotnet test Tests/Tests.csproj -c Release --no-build --no-restore --verbosity normal
+        run: |
+          dotnet test Tests/Tests.csproj -c Release --no-build --no-restore --verbosity normal             --logger "trx;LogFileName=acceptance.trx" --results-directory TestResults
+          python3 scripts/check-tests.py TestResults/acceptance.trx --minimum 392
+          python3 -m unittest discover -s scripts -p test_test_gate.py -v
 
       - name: Matching engine micro-benchmark (smoke)
         run: dotnet run --project Bench/Bench.csproj -c Release --no-build -- matching --sizes 1000
