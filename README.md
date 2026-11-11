@@ -1,11 +1,18 @@
 # MarketDataSimulator
 
-A deterministic exchange core and market-data recovery laboratory for .NET 8. The system is built
+A deterministic exchange core and market-data recovery laboratory for .NET 10. The system is built
 around falsifiable invariants: price-time priority, exact replay, explicit stale state, bounded
 memory, wire integrity, and measured allocation.
 
 This is a research system, not a production venue. The implemented boundary is explicit; see
 [Operational surface](#operational-surface).
+
+Current build target: .NET 10 LTS. Historical benchmark records retain their
+original runtime and host; this migration does not remeasure them. The feed
+smoke task uses Linux x86-64 because Grpc.Core does not ship the required native
+library for macOS ARM64. Core tests can run on macOS ARM64.
+
+Choose a task: [three self-serve market-data labs](docs/SELF_SERVE_LABS.md).
 
 ## System
 
@@ -171,8 +178,8 @@ dotnet test Tests/Tests.csproj -c Release --no-build --no-restore
 Run the simulator and reference client in separate terminals:
 
 ```bash
-dotnet Server/bin/Release/net8.0/Server.dll Server/appsettings.json
-dotnet Client/bin/Release/net8.0/Client.dll
+dotnet Server/bin/Release/net10.0/Server.dll Server/appsettings.json
+dotnet Client/bin/Release/net10.0/Client.dll
 ```
 
 Run the evidence suites:
