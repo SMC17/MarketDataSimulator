@@ -62,6 +62,7 @@ x86 hardware throughput claim follows. Build, generated-document checks and
 both feed smoke paths pass. CI now checks TRX counters so an exit-zero test
 command with empty discovery cannot count as acceptance.
 
-The repository currently has no license file. This change does not choose a
-license or claim permission for downstream redistribution. No old benchmark
-measurement is replaced by these acceptance runs.
+Project code and original documentation use the existing Apache-2.0 license.
+Market samples and third-party dependencies retain separate terms; see
+[LICENSING.md](../LICENSING.md). No old benchmark measurement is replaced by
+these acceptance runs.
