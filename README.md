@@ -14,6 +14,9 @@ library for macOS ARM64. Core tests can run on macOS ARM64.
 
 Choose a task: [three self-serve market-data labs](docs/SELF_SERVE_LABS.md).
 
+Code and original documentation: [Apache-2.0](LICENSE). Market samples and
+dependencies retain separate terms; see [licensing and provenance](LICENSING.md).
+
 ## System
 
 | Layer | Implementation |
