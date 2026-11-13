@@ -1,5 +1,7 @@
 # MarketDataSimulator
 
+**[Status](STATUS.md) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Issues](https://github.com/SMC17/MarketDataSimulator/issues) · [All SMC17 work](https://github.com/users/SMC17/projects/16)**
+
 A deterministic exchange core and market-data recovery laboratory for .NET 10. The system is built
 around falsifiable invariants: price-time priority, exact replay, explicit stale state, bounded
 memory, wire integrity, and measured allocation.
